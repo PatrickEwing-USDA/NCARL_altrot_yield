@@ -1,0 +1,219 @@
+---
+title: "Process Weather Data"
+subtitle: "Created July, 2020"
+author: "PME"
+date: "`r format(Sys.time(), '%d %B, %Y, %H:%M')`"
+knit: (function(inputFile, encoding) {
+  rmarkdown::render(inputFile, encoding=encoding, output_dir=here::here('Results'))})
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    df_print: paged
+    code_folding: hide
+  pdf_document: default
+  word_document: default
+---
+
+```{r set_options, include=FALSE}
+knitr::opts_chunk$set(message=FALSE, 
+                      warning=FALSE,
+					  fig.align='center')
+```
+
+# Overview
+
+Weather data of the rotation experiment at NCARL/ESDSWRF 2000-2016.
+
+Goals:
+
+1. Mean temperature
+  1. Flowering
+  2. Intervals throughout the growing season
+2. Precipitation
+  1. At intervals throughout the growing season
+
+Flowering Windows:
+
+- Winter Wheat	June 2-8
+- Pea	June 8-14
+- Spring Wheat	June 10-16
+- Oats	June 14-20
+- Canola	June 16-22
+- Soybean	July 2-8
+- Corn	July 24-30
+
+Precip categories - monthly, April 15-Sept 15
+
+Mean Temp - monthly, April 15-Sept 15
+
+
+# Load
+## Libraries and Data
+```{r}
+libs = c('ggplot2', 
+         'magrittr', 
+         'here', 
+         'lme4', 
+         'tidyr', 
+         'gridExtra',
+         'lattice')
+
+in_dir = file.path('Data', 'Inputs')
+in_df = '2000-2016 Weather.csv'
+
+out_dir = 'Data'
+out_df = 'Weather Summary.csv'
+```
+
+
+```{r}
+for (i in libs) {
+  if (!(require(i, character.only=TRUE))) { # install if necessary
+    install.packages(i)
+    library(i, character.only=TRUE)
+  }
+}
+
+
+df = here(in_dir, in_df) %>% 
+  read.csv
+
+str(df)
+```
+
+### Munge and summarize
+Won't worry about leap years, as a day difference shouldn't be a big deal. 
+```{r}
+df$YEAR = strsplit(df$DATE, '/') %>% 
+  sapply('[', 3)
+df$DATE %<>% as.Date(format='%m/%d/%Y')
+
+flower_intervals = rbind(
+  Wwheat = c(152, 160),  # DOY
+  Pea = c(158, 166),
+  Swheat = c(160, 168),
+  Oat = c(164, 172),
+  Can = c(166, 174),
+  Soy = c(181, 190),
+  Corn = c(204, 212)
+  # spring = c(162, 171),
+  # soy = c(182, 191),
+  # corn = c(202, 211)
+) %>%
+  set_colnames(c('start', 'end'))
+
+summary_intervals = rbind(
+  MarApr = c(75, 105),
+  AprMay = c(106, 135),
+  MayJun = c(136, 166),
+  JunJul = c(167, 196),
+  JulAug = c(197, 227),
+  AugSep = c(228, 258)
+) %>% 
+  set_colnames(c('start', 'end'))
+
+```
+
+# Summarize
+## Functions
+```{r}
+wide_to_tall = function(x, val='value') {
+  x %<>% as.data.frame
+  x$YEAR = rownames(x) %>% 
+    as.character
+  x %<>% pivot_longer(cols=where('is.numeric'),
+                      names_to='INTERVAL',
+                      values_to=val)
+  return(x)
+}
+
+mat_to_df = function(x, val='value') {
+  x %<>% as.data.frame
+  colnames(x) %<>% paste(val, sep='_')
+  return(x)
+}
+```
+
+## Flowering temps
+```{r}
+df_annual = split(df, df$YEAR)
+flower_temps = apply(flower_intervals, 1, function(x) {
+  sapply(df_annual, function(y) {
+    ss = y$DOY >= x['start'] & y$DOY <= x['end']
+    mean(y[ss, 'MAX_T'], na.omit=TRUE)
+  })
+})
+flower_temps %>% round(1)
+```
+
+
+```{r}
+levelplot(t(cor(flower_temps)), at=seq(-1, 1, by=0.05),
+                   main='correlation among max temp at flowering')
+```
+
+```{r}
+flower_temps %<>% mat_to_df('FLOWER_AVG_MAXT')
+```
+
+
+## Mean temp at intervals
+```{r}
+interval_temps = apply(summary_intervals, 1, function(x) {
+  sapply(df_annual, function(y) {
+    ss = y$DOY >= x['start'] & y$DOY <= x['end']
+    mean(y[ss, 'AVG_T'], na.omit=TRUE)
+  })
+})
+interval_temps %>% round(1)
+```
+
+```{r}
+levelplot(cor(interval_temps), at=seq(-.5, .5, by=0.05),
+                   main='correlation among average temperature')
+```
+
+```{r}
+interval_temps %<>% mat_to_df('MEANT')
+```
+
+
+## Total precip at intervals
+```{r}
+interval_precip = apply(summary_intervals, 1, function(x) {
+  sapply(df_annual, function(y) {
+    ss = y$DOY >= x['start'] & y$DOY <= x['end']
+    sum(y[ss, 'PRECIP'], na.omit=TRUE)
+  })
+})
+interval_precip %>% round(1)
+```
+
+```{r}
+levelplot(t(cor(interval_precip)), at=seq(-.5, .5, by=0.05),
+                   main='correlation among total precipitation')
+```
+
+```{r}
+interval_precip %<>% mat_to_df('PRECIP')
+```
+
+# Combine and export
+```{r}
+weather_summary = cbind(flower_temps, interval_precip, interval_temps) %>% 
+  data.frame(
+    YEAR = rownames(.),
+    .
+  ) %>% 
+  set_rownames(NULL)
+```
+
+## Export
+```{r}
+here(out_dir, out_df) %>% 
+  write.csv(weather_summary, 
+            .,
+            row.names=FALSE)
+```

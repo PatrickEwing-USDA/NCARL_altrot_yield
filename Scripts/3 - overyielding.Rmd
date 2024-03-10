@@ -1,0 +1,916 @@
+---
+title: "Part 3: Overyielding"
+subtitle: "Created March, 2023"
+author: "PME"
+date: "`r format(Sys.time(), '%d %B, %Y, %H:%M')`"
+knit: (function(inputFile, encoding) {
+  rmarkdown::render(inputFile, encoding=encoding, output_dir=here::here('Results'))})
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    df_print: paged
+    code_folding: hide
+  pdf_document: default
+  word_document: default
+---
+
+
+# Overview
+
+In Part 2, we saw that high-yielding rotations are often, but not always, less
+reliable. Specifically, the CS rotation was high yielding but also quite
+susceptible to weather variation. The COWwS rotation was as high-yielding as CS, 
+but was as stable across weather-years as the most stable rotation, CCaWwS, and
+the lowest-yielding rotation, CSSwS. 
+
+What allows COWwS to be so high-yielding? Does corn and soybean yield better 
+in this rotation than in CS?
+
+Steps:
+
+1. Load
+2. Assess productivity of corn and soybean within rotation
+  1. Test yield ~ rotation for cycles 2-4 - to allow legacy effects to accumulate.
+  2. Contrasts/effects
+    1. Corn - yield in CS + CCSSw vs other 4-year; CS vs COWwS
+    2. Soy - yield in CS + CSSwS vs other 4-year; CS vs COWwS
+    3. And both from diversity, richness, functional group
+3. Also test Ww and Sw yield ~ rotation where existing. 
+  
+
+
+## Load
+```{r message=FALSE}
+libs = c(
+  'here',
+  'magrittr',
+  'tidyr',
+  'lme4',
+  'car',
+  'ggplot2',
+  'gridExtra',
+  'emmeans',
+  'multcomp',
+  'ggtext',
+  'wesanderson'
+)
+
+for (i in libs) {
+  if (!require(i, character.only=TRUE)) {
+    renv::install(i)
+    library(i, character.only=TRUE)
+  }
+}
+
+se = function(x) sd(x)/sqrt(length(x))
+
+# selected from color brewer Set1
+crop_colors = c(
+  Can =  "#4DAF4A",
+  Corn = "#FF7F00",
+  Oat = "#999999",
+  Pea =  "#984EA3",  
+  Soy =  "#377EB8",
+  Swheat = "#F781BF",
+  Wwheat = "#E41A1C"
+)
+
+rot_colors = c(
+  CS     = '#4b4b4b', # dark gray
+  CCaWwS = '#B2DF8A', # light green
+  CSSwS  = '#33A02C', # green
+  COWwS  = '#FB9A99', # light red
+  CCSSw  = '#ae1415', # red
+  CPWwS  = '#a89ad0', # light purple
+  CSSwP  = '#6951b6'  # purple
+)
+
+rot_shapes = c(
+  CCaWwS = 16, 
+  CCSwS  = 17, 
+  COWwS  = 15, 
+  CPWwS  = 3, 
+  CS     = 7, 
+  CSSwP  = 8, 
+  CSSwS  = 5
+)
+
+pseudo_palette_3 = c('#E8601C',
+                     '#4EB265',
+                     '#1965B0')
+
+pretty_crop = c(
+  Can = 'Canola',
+  Corn = 'Corn',
+  Wwheat = 'Winter\nWheat',
+  Swheat = 'Spring\nWheat',
+  Oat = 'Oat',
+  Pea = 'Pea',
+  Soy = 'Soybean'
+)
+
+```
+
+```{r}
+in_dir = 'Data'
+in_crop = 'crop performance.csv'
+in_rot = 'rotation performance.csv'
+
+out_dir = 'Results'
+
+df = here(in_dir, in_crop) %>% 
+  read.csv
+
+rot = here(in_dir, in_rot) %>% 
+  read.csv
+```
+
+ensure factors are flagged as such
+```{r}
+facts = 
+  c('YEAR', 
+    'ROTATION', 
+    'REP',
+    'CYCLE',
+    'CYCLE_YEAR', 
+    'PLOT',
+    'PREVIOUS', 
+    'CURRENT',
+    'CYCLE_TEXT')
+
+cycle_text = c(
+  `1`='2001\n-\n2004',
+  `2`='2005\n-\n2008',
+  `3`='2009\n-\n2012',
+  `4`='2013\n-\n2016'
+)
+
+prev_crop_abbrev = c(
+  Canola = 'Ca',
+  Corn = 'C',
+  Oat = 'O',
+  Pea = 'P',
+  Soy = 'S',
+  Swheat = 'Sw',
+  Wwheat = 'Ww'
+)
+
+df$CYCLE_TEXT = df$CYCLE %>% 
+  as.character %>% 
+  cycle_text[.]
+
+
+is_first_sw = df$YEAR == 2001
+df$PREVIOUS[is_first_sw] = NA
+df$PREV = df$PREVIOUS %>% 
+  as.character %>% 
+  prev_crop_abbrev[.] %>% 
+  factor(., levels=prev_crop_abbrev)
+
+
+df[, facts] %<>% lapply(as.factor)
+rot[, facts[-c(6:9)]] %<>% lapply(as.factor)
+
+
+
+
+# for plotting
+dodge = 0.8
+se_hilo = function(x) mean_se(x)[, -c(1)]
+
+# convert yield to Mg/ha
+df$YIELD = df$YIELD/1000
+rot$YIELD = rot$YIELD/1000
+```
+
+# Overall crop yields
+```{r}
+crop_plots = list()
+alt_plots = list()
+
+mod = lmer(YIELD ~ CURRENT*CYCLE_TEXT + (1|YEAR) + (1|REP:PLOT), data=df)
+Anova(mod, test.statistic='F')
+```
+
+```{r}
+emmeans(mod, ~CURRENT|CYCLE_TEXT) %>% 
+  cld(adjust='fdr', Letters=letters, reverse=TRUE)
+```
+
+Main effects
+```{r}
+emmm = emmeans(mod, ~CURRENT)
+cld(emmm, adjust='fdr', Letters=LETTERS, reverse=TRUE, level=.9)
+```
+Corn easily yielded the most, followed by winter wheat and oats. Soybean was 
+second-worst, well ahead of Canola. 
+
+```{r}
+pairs(emmm, adjust='fdr')
+```
+
+
+```{r fig.height=2.5, fig.width=6.5}
+
+within_grp = emmeans(mod, ~CURRENT|CYCLE_TEXT) %>% 
+  cld(adjust='fdr', Letters=letters, reverse=TRUE)
+colnames(within_grp) %<>% gsub('.group', 'WITHIN', .)
+
+across_grp = emmeans(mod, ~CURRENT) %>% 
+  cld(adjust='fdr', Letters=LETTERS, reverse=TRUE)
+colnames(across_grp) %<>% gsub('.group', 'ACROSS', .)
+
+grps = merge(within_grp, across_grp[, c('CURRENT', 'ACROSS')], by='CURRENT')
+grps[, c('WITHIN', 'ACROSS')] %<>% lapply(trimws)
+
+grps$GROUP = with(grps, paste(WITHIN, ACROSS, sep='\n'))
+grps$prettyname = as.character(grps$CURRENT) %>% 
+  pretty_crop[.] %>% 
+  paste(' (', grps$ACROSS, ')', sep='')
+# grps$CURRENT_GRP = with(grps, paste(CURRENT, ' (', ACROSS, ')', sep=''))
+
+pltdf = merge(df, grps[, c('CURRENT', 'prettyname')], by='CURRENT')
+pltdf$CYCLE_TEXT %<>% gsub('\n', ' ', .)
+
+grporder = aggregate(YIELD ~ prettyname + CURRENT, data=pltdf, mean)
+curorder = grporder[order(grporder$YIELD, decreasing=TRUE), 'CURRENT']
+grporder = grporder[order(grporder$YIELD, decreasing=TRUE), 'prettyname']
+
+pltdf$prettyname %<>% factor(levels=grporder)
+```
+
+
+```{r fig.height=2, fig.width=6.5}
+pointranges = function(x, r) {
+  r = 1-r
+  x %<>% na.omit()
+  data.frame(y = median(x),
+             ymin = quantile(x, r/2),
+             ymax = quantile(x, 1-(r/2)))
+}
+
+crop_plots[['all']] =
+  ggplot(pltdf,
+         aes(x=prettyname,
+             y=YIELD,
+             color=prettyname)) +
+  facet_wrap(~CYCLE_TEXT, nrow=1) +
+  scale_color_manual(values=crop_colors[curorder] %>% set_names(NULL)) +
+  scale_y_continuous(breaks=seq(0, 14, by=2)) +
+  # geom_boxplot(shape=21) +
+  stat_summary(fun.data=pointranges,
+               geom='pointrange',
+               fun.args=list(r=.9),
+               size=0.1) +
+  stat_summary(fun.data=pointranges,
+               geom='pointrange',
+               fun.args=list(r=0.5),
+               linewidth=1.5,
+               size=0.5) +
+  labs(x=NULL,
+       y='Yield [Mg ha<sup>-1</sup>]',
+       color=NULL) +
+  theme(panel.grid=element_blank(),
+        panel.background=element_rect(fill='#f7f7f7', linewidth=0.1),
+        axis.ticks.x=element_blank(),
+        axis.ticks.y=element_line(linewidth=0.1),
+        axis.text.x=element_blank(),
+        strip.background=element_blank(),
+        text=element_text(size=10),
+        legend.key=element_blank(),
+        axis.title=element_markdown())
+
+crop_plots[['all']]
+
+```
+
+Corn yields more than others, canola the least, and oat and winter wheat are tied for second most, though trail corn by maybe 2000 kg/ha. 
+
+```{r}
+"Figure 2 - Crop Yields.jpg" %>% 
+  here(out_dir, .) %>% 
+  ggsave(crop_plots[['all']], height=2, width=6.5, dpi=300, units='in')
+```
+
+
+# Corn
+```{r}
+crop = 'Corn'
+subdf = subset(df, CURRENT==crop) %>% 
+  droplevels
+
+base = subset(subdf, ROTATION=='CS') %>% 
+  with(., tapply(.$YIELD, .$YEAR, mean))
+
+subdf$BASE = base[subdf$YEAR]
+subdf$DIFF = subdf$YIELD - subdf$BASE
+
+mod = lmer(DIFF ~ ROTATION*CYCLE + (1|YEAR) + (1|REP/PLOT), data=subdf)
+Anova(mod, test.statistic='F')
+```
+
+Corn yields differently in different rotations. These differences vary across cycles but
+not in a substantial way. 
+
+## Contrasts
+```{r}
+within_grp = emmeans(mod, ~ROTATION|CYCLE) %>% 
+  cld(adjust='fdr', Letters=letters, reverse=TRUE) %T>%
+  print
+```
+
+```{r}
+across_grp = emmeans(mod, ~ROTATION) %>% 
+  cld(Letters=LETTERS, reverse=TRUE, adjust='fdr') %T>%
+  print
+```
+
+Corn yielded best in CSSwP and worst in CCSwS. Effects were strongest in Cycles 
+1 and 2. 
+
+## Explanations
+```{r}
+explmod = lmer(DIFF ~ NSPECIES + PREVIOUS + (1|YEAR) + (1|REP/PLOT), 
+               data=subset(subdf, YEAR != '2021'))
+Anova(explmod, test.statistic='F')
+```
+
+
+
+```{r}
+explmod = lmer(DIFF ~ NSPECIES + (1|YEAR) + (1|REP/PLOT),
+               data=subset(subdf, CYCLE != 1))
+Anova(explmod, test.statistic='F')
+```
+
+### Diversity
+```{r}
+explmod = lmer(DIFF ~ NSPECIES + (1|YEAR) + (1|REP/PLOT), 
+               data=subset(subdf, CYCLE != 1))
+Anova(explmod, test.statistic='F')
+```
+
+### Previous
+```{r}
+explmod = lmer(DIFF ~ PREVIOUS + (1|YEAR) + (1|REP/PLOT), 
+               data=subset(subdf, CYCLE != 1))
+Anova(explmod, test.statistic='F')
+```
+
+```{r}
+explgrp = emmeans(explmod, ~PREVIOUS) %>% 
+  cld(adjust='fdr', Letters=letters, reverse=TRUE) %T>%
+  print
+```
+But corn still does better after pea.
+
+```{r}
+emmeans(explmod, ~PREVIOUS) %>% 
+  pairs(adjust='fdr')
+```
+
+
+```{r}
+summary(explmod)
+```
+But worse in more diverse rotations after accounting for sequencing effects.
+
+## Plot
+Based on those results, we will show two graphs:
+1. based on previous crop
+2. based on rotation. 
+```{r fig.height=2.5, fig.width=6.5}
+colnames(within_grp) %<>% 
+  gsub('.group', 'WITHIN', .)
+colnames(across_grp) %<>% 
+  gsub('.group', 'ACROSS', .)
+
+across_grp$ROTATION_GRP = with(across_grp,
+                               paste(ROTATION, ' (',
+                                     trimws(ACROSS), ')',
+                                     sep=''))
+
+grps = merge(within_grp, 
+             across_grp[, c('ROTATION', 'ACROSS')], 
+             by='ROTATION')
+grps[, c('ACROSS', 'WITHIN')] %<>% 
+  lapply(trimws)
+
+grps$ROTATION_GRP = with(grps, 
+                         paste(ROTATION, ' (', ACROSS, ')', 
+                               sep=''))
+
+explgrp$PREVIOUS %<>% as.character
+explgrp$PREV_GRP = pretty_crop[explgrp$PREVIOUS] %>% 
+  # prev_crop_abbrev[.] %>% 
+  paste(' (', 
+        trimws(explgrp$.group),
+        ')', sep='')
+
+pltdf = 
+  subdf %>% 
+  merge(grps[, c('ROTATION', 'CYCLE', 'ROTATION_GRP')], 
+        by=c('ROTATION', 'CYCLE')) %>% 
+  merge(explgrp[, c('PREVIOUS', 'PREV_GRP')], by='PREVIOUS')
+lvls = unique(pltdf$ROTATION_GRP) %>% 
+  set_names(., strsplit(., ' ') %>% sapply('[', 1)) %>% 
+  .[names(rot_colors)]
+pltdf$ROTATION_GRP %<>% factor(levels=lvls)
+
+prvgrp_order = order(explgrp$emmean, decreasing=TRUE)
+pltdf$PREV_GRP %<>% factor(levels=explgrp$PREV_GRP[prvgrp_order])
+
+rotgrp_order = order(across_grp$emmean, decreasing=TRUE)
+pltdf$ROTATION_GRP %<>% factor(levels=across_grp$ROTATION_GRP[rotgrp_order])
+
+# shape_order = across_grp %>% 
+#   as.data.frame %>% 
+#   set_rownames(.$ROTATION) %>% 
+#   .[names(lvls), 'emmean'] %>%
+#   order(decreasing=TRUE)
+
+shape_order = rot_shapes[across_grp[, 'ROTATION']] %>% 
+  set_names(NULL)
+
+color_order = crop_colors[explgrp[, 'PREVIOUS']] %>% 
+  set_names(NULL)
+  
+```
+
+
+```{r fig.height=2.5, fig.width=5}
+crop_plots[[crop]] = 
+  ggplot(pltdf,
+         aes(x=as.numeric(CYCLE),
+             y=DIFF,
+             shape=ROTATION_GRP,
+             color=PREV_GRP)) +
+  scale_x_continuous(breaks=1:4,
+                     labels=cycle_text) +
+  # scale_color_brewer(palette='Dark2') +
+  scale_color_manual(values=color_order) +
+  scale_shape_manual(values=shape_order) +
+  geom_hline(aes(yintercept=0),
+             color='darkgray',
+             size=0.3) +
+  stat_summary(fun.data=mean_se,
+               geom='pointrange',
+               stroke=0.2,
+               size=0.5) +
+  stat_summary(fun=mean,
+               geom='path',
+               linewidth=0.2, 
+               linetype=3,
+               show.legend=FALSE) +
+  labs(title=crop, 
+       x=NULL,
+       y='Relative Corn<br>Yield [Mg ha<sup>-1</sup>]',
+       shape='Rotation',
+       color='Preceding Crop') +
+  guides(color=guide_legend(order=2),
+         shape=guide_legend(order=1)) +
+  theme(panel.background=element_blank(),
+        legend.key=element_blank(),
+        strip.background=element_blank(),
+        text=element_text(size=10),
+        legend.box='horizontal',
+        axis.title.y=element_markdown(),
+        axis.ticks=element_line(linewidth=0.1))
+crop_plots[[crop]]
+```
+
+We don't see consistent evidence of corn overyielding in diverse rotations except possibly in CSSwS and CSSwP. This benefit is immediate and variable, but without
+an obvious trend. 
+
+# Soybean
+```{r}
+crop = 'Soy'
+subdf = subset(df, CURRENT==crop) %>% 
+  droplevels
+
+base = subset(subdf, ROTATION=='CS') %>% 
+  with(., tapply(.$YIELD, .$YEAR, mean))
+
+subdf$BASE = base[subdf$YEAR]
+subdf$DIFF = subdf$YIELD - subdf$BASE
+
+mod = lmer(DIFF ~ ROTATION*CYCLE + (1|YEAR) + (1|REP:PLOT), data=subdf)
+Anova(mod, test.statistic='F')
+```
+
+Corn yields differently in different rotations, which varries across year. 
+
+## Contrasts
+```{r}
+within_grp = emmeans(mod, ~ROTATION|CYCLE) %>% 
+  cld(adjust='fdr', Letters=letters, reverse=TRUE) %T>%
+  print
+```
+
+```{r}
+across_grp = emmeans(mod, ~ROTATION) %>% 
+  cld(Letters=LETTERS, reverse=TRUE, adjust='fdr') %T>%
+  print
+```
+
+Soybean yielded better in all 4-year rotations except CCSSw. This effect 
+grew as the system matured, so that even CCSSw was a better soybean rotation
+than CS. 
+
+## Explanations
+
+```{r}
+explmod = lmer(DIFF ~ NSPECIES + PREVIOUS + (1|YEAR) + (1|REP:PLOT), 
+               data=subset(subdf, YEAR != 2001))
+Anova(explmod, test.statistic='F')
+```
+
+
+```{r}
+summary(explmod)
+```
+
+
+### Previous Crop
+
+```{r}
+emmeans(explmod, ~PREVIOUS) %>% 
+  cld(adjust='fdr', Letters=letters, reverse=TRUE)
+```
+
+Soybean does best after spring wheat. 
+```{r}
+emmeans(explmod, ~PREVIOUS) %>% 
+  pairs(adjust='fdr')
+```
+
+
+```{r}
+summary(explmod)
+```
+
+## Plot
+Will plot to show the diversity effect.
+
+```{r fig.height=2.5, fig.width=6.5}
+colnames(within_grp) %<>% gsub('.group', 'WITHIN', .)
+colnames(across_grp) %<>% gsub('.group', 'ACROSS', .)
+
+grps = merge(within_grp, across_grp[, c('ROTATION', 'ACROSS')], by='ROTATION')
+grps[, c('ACROSS', 'WITHIN')] %<>% lapply(trimws)
+
+grps$ROTATION_GRP = with(grps, paste(ROTATION, ' (', ACROSS, ')', sep=''))
+
+pltdf = subdf %>% 
+  merge(grps[, c('ROTATION', 'CYCLE', 'WITHIN', 'ROTATION_GRP')], 
+        by=c('ROTATION', 'CYCLE'))
+lvls = unique(pltdf$ROTATION_GRP) %>% 
+  set_names(., strsplit(., ' ') %>% sapply('[', 1)) %>% 
+  .[names(rot_colors)]
+pltdf$ROTATION_GRP %<>% factor(levels=lvls)
+
+
+across_grp$ROTATION_GRP = 
+  with(across_grp,
+       paste(ROTATION, ' (', 
+             trimws(ACROSS),
+             ')', sep=''))
+rotgrp_order = order(across_grp$emmean, decreasing=TRUE)
+pltdf$ROTATION_GRP %<>% factor(levels=across_grp$ROTATION_GRP[rotgrp_order])
+
+shape_order = across_grp %>% 
+  as.data.frame %>% 
+  set_rownames(.$ROTATION) %>% 
+  .[names(lvls), 'emmean'] %>%
+  order(decreasing=TRUE)
+
+shape_order = rot_shapes[across_grp[, 'ROTATION']] %>% 
+  set_names(NULL)
+
+```
+
+
+```{r fig.height=2.5, fig.width=5}
+crop_plots[[crop]] = 
+  ggplot(pltdf,
+         aes(x=as.numeric(CYCLE),
+             y=DIFF,
+             color=factor(NSPECIES),
+             shape=ROTATION_GRP)) +
+  scale_x_continuous(breaks=1:4,
+                     labels=cycle_text) +
+  scale_shape_manual(values=shape_order) + #rot_shapes[shape_order]) +
+  # scale_color_manual(values=c('#fb580c',
+  #                             '#e6c000',
+  #                             '#4bac34')) +
+  scale_color_manual(values=pseudo_palette_3) +
+  geom_hline(aes(yintercept=0),
+             color='darkgray',
+             size=0.3) +
+  stat_summary(fun.data=mean_se,
+               geom='pointrange',
+               stroke=0.2,
+               size=0.5) +
+  stat_summary(fun=mean,
+               geom='path',
+               linewidth=0.2, 
+               linetype=3,
+               show.legend=FALSE) +
+  labs(title=crop, 
+       x=NULL,
+       y='Relative Soybean<br>Yield [Mg ha<sup>-1</sup>]',
+       color="Rotation Species",
+       shape='Rotation') +
+  guides(color=guide_legend(order=2),
+         shape=guide_legend(order=1)) +
+  theme(panel.background=element_blank(),
+        legend.key=element_blank(),
+        text=element_text(size=10),
+        legend.box='horizontal',
+        legend.title=element_markdown(hjust=0),
+        axis.title.y=element_markdown(),
+        axis.ticks=element_line(linewidth=0.1))
+crop_plots[[crop]]
+```
+
+Clear evidence of overyielding in diverse rotations that develops over time. 
+
+
+# Crop-Level Discussion
+We see evidence of overyielding for soybean after spring wheat and in diverse rotations. We don't see evidence for overyielding in corn, except following pea, and corn does more poorly in diverse rotations. 
+
+
+# Rotation: Overyielding?
+
+What is expected rotation yield? = sum(E(yield|crop)) for all crops in a rotation. I can calculate this within each year-rep. 
+
+1. Calculate expected within block based on crop species
+2. Calculate observed within block (Fig 1a)
+3. Calculate difference
+
+## Calculate expected rotation yield in each rep-year
+```{r}
+rotations = list(
+  CCaWwS = c('Corn', 'Can', 'Wwheat', 'Soy'),
+  CCSSw = c('Corn', 'Corn', 'Soy', 'Swheat'),
+  COWwS = c('Corn', 'Oat', 'Wwheat', 'Soy'),
+  CPWwS = c('Corn', 'Pea', 'Wwheat', 'Soy'),
+  CS = c('Corn', 'Soy'),
+  CSSwP = c('Corn', 'Soy', 'Swheat', 'Pea'),
+  CSSwS = c('Corn', 'Soy', 'Swheat', 'Soy')
+)
+
+get_expected = function(x) {
+  crop_yields = tapply(x$YIELD, x$CURRENT, mean)
+  
+  sapply(rotations, function(x) {
+    mean(crop_yields[x])
+  })
+}
+
+eyield = split(df, df[, c('YEAR', 'REP')]) %>% 
+  sapply(get_expected) %>% 
+  data.frame(ROTATION = rownames(.),
+             .) %>% 
+  pivot_longer(cols=where('is.numeric'), 
+               values_to='EYIELD',
+               names_to='YEAR') %>% 
+  as.data.frame
+eyield[, c('YEAR', 'REP')] = strsplit(eyield$YEAR, '\\.') %>% 
+  do.call(rbind, .)
+eyield$YEAR %<>% gsub('X', '', .)
+```
+
+## Combine with observed rotation yield
+```{r}
+mergers = c('ROTATION', 'YEAR', 'REP')
+for (i in mergers) {
+  eyield[, i] %<>% factor(levels=levels(rot[, i]))
+}
+
+eyield %<>% merge(rot[, c(mergers, 'CYCLE', 'CYCLE_YEAR', 'YIELD')], 
+                  by=mergers, 
+                  all.x=TRUE)
+eyield$CYCLE_TEXT = eyield$CYCLE %>% 
+  as.character %>% 
+  cycle_text[.]
+eyield$DIFF = with(eyield, YIELD - EYIELD)
+```
+
+## Test
+```{r}
+mod = na.omit(eyield) %>% 
+  lmer(DIFF ~ ROTATION*CYCLE + (1|YEAR) + (1|REP/CYCLE_YEAR),
+       data=.)
+Anova(mod, test.statistic='F')
+```
+
+
+```{r}
+within_grp = emmeans(mod, ~ROTATION|CYCLE) %>% 
+  cld(adjust='fdr', Letters=letters, reverse=TRUE) %T>%
+  print
+```
+
+```{r}
+across_grp = emmeans(mod, ~ROTATION) %>% 
+  cld(Letters=LETTERS, reverse=TRUE, adjust='fdr') %T>%
+  print
+```
+
+CSSwP showed overyielding, probalby due to the pea-corn benefits. We see weak overyielding in COWwS, CSSwS, and CCaWwS. We see underyielding in CS, CPWwS, and especially CCSSw. Where CCaWwS was successful it generaly was neutral. Effects emerged immediately,
+suggesting they're corn-driven. 
+
+```{r}
+aggregate(DIFF ~ ROTATION, data=na.omit(eyield), mean)
+```
+```{r}
+aggregate(DIFF ~ ROTATION, data=na.omit(eyield), function(x) sd(x)/sqrt(length(x)))
+```
+
+```{r}
+aggregate(DIFF ~ ROTATION, data=na.omit(eyield), function(x) t.test(x)$p.value)
+```
+
+
+
+
+```{r}
+summary(mod)
+```
+
+
+## Explanations
+```{r}
+subdf = eyield %>% #subset(eyield, CYCLE != 1) %>% 
+  merge(unique(df[, c('ROTATION', 'NSPECIES')]), by='ROTATION')
+
+explmod = lmer(DIFF ~ NSPECIES*CYCLE  + (1|YEAR) + (1|REP:CYCLE_YEAR),
+               data=subdf)
+Anova(explmod, test.statistic='F')
+```
+
+```{r}
+summary(explmod)
+```
+ 
+
+## Plot
+```{r}
+colnames(within_grp) %<>% gsub('.group', 'WITHIN', .)
+colnames(across_grp) %<>% gsub('.group', 'ACROSS', .)
+
+grps = merge(within_grp, across_grp[, c('ROTATION', 'ACROSS')], by='ROTATION')
+grps[, c('ACROSS', 'WITHIN')] %<>% lapply(trimws)
+
+grps$GROUP = with(grps, paste(WITHIN, ACROSS, sep='\n'))
+grps$ROTATION_GRP = with(grps, paste(ROTATION, ' (', ACROSS, ')', sep=''))
+
+pltdf = subdf %>%
+  merge(grps[, c('ROTATION', 'ROTATION_GRP')], by='ROTATION')
+
+lvls = unique(pltdf$ROTATION_GRP) %>% 
+  set_names(., strsplit(., ' ') %>% sapply('[', 1)) %>% 
+  .[names(rot_colors)]
+
+pltdf$ROTATION_GRP %<>% factor(levels=lvls)
+
+across_grp$ROTATION_GRP = 
+  with(across_grp,
+       paste(ROTATION, ' (', 
+             trimws(ACROSS),
+             ')', sep=''))
+rotgrp_order = order(across_grp$emmean, decreasing=TRUE)
+pltdf$ROTATION_GRP %<>% factor(levels=across_grp$ROTATION_GRP[rotgrp_order])
+
+shape_order = across_grp %>% 
+  as.data.frame %>% 
+  set_rownames(.$ROTATION) %>% 
+  .[names(lvls), 'emmean'] %>%
+  order(decreasing=TRUE)
+```
+
+
+```{r}
+crop_plots[['overyield']] = 
+  ggplot(pltdf,
+         aes(x=as.numeric(CYCLE),
+             y=DIFF,
+             shape=ROTATION_GRP,
+             color=as.factor(NSPECIES))) +
+  scale_x_continuous(breaks=1:4,
+                     labels=cycle_text) +  
+  # scale_color_manual(values=c('#fb580c',
+  #                             '#e6c000',
+  #                             '#4bac34')) +
+  scale_color_manual(values=pseudo_palette_3) +
+  scale_shape_manual(values=c(16, 17, 15, 4, 7, 8, 11)[shape_order]) +
+  geom_hline(aes(yintercept=0),
+             color='darkgray',
+             size=0.3) +
+  stat_summary(fun.data=mean_se,
+               geom='pointrange',
+               stroke=0.2,
+               size=0.5) +
+  stat_summary(fun=mean,
+               geom='path',
+               linewidth=0.3, 
+               linetype=3,
+               show.legend=FALSE) +
+  labs(x=NULL,
+       y='Rotation Yield<br>Deviance [Mg ha<sup>-1</sup>]',
+       shape='Rotation',
+       color="Rotation Species") +
+  guides(shape=guide_legend(order=1),
+         color=guide_legend(order=2)) +
+  theme(panel.background=element_blank(),
+        legend.key=element_blank(),
+        strip.background=element_blank(),
+        text=element_text(size=10),
+        legend.title=element_markdown(hjust=0),
+        legend.box='horizontal',
+        axis.ticks=element_line(linewidth=0.1),
+        axis.title.y=element_markdown())#(orientation='left-rotated'))
+crop_plots[['overyield']]
+```
+
+CS underyields relative to more diverse rotations. CCSSw definitely underyields.
+
+
+
+# Export
+```{r fig.height=4.5, fig.width=4.5}
+# colors from https://davidmathlogic.com/colorblind/
+
+p1 = crop_plots$all +
+  labs(tag='a)') +
+  # guides(fill=guide_legend(label.position='bottom',
+                           # nrow=1)) +
+  theme(text=element_text(size=8),
+        strip.text=element_blank(),
+        # legend.margin=margin(b=10),
+        legend.key.height=unit(0.18, 'in'))
+
+p2 = crop_plots$Corn +
+  labs(tag='a)',
+       title=NULL) +
+  # scale_color_manual(values=c('#EE6677', '#228833', '#CCBB44', '#4477AA')) +
+  guides(color=guide_legend(ncol=2, order=1),
+         shape=guide_legend(ncol=2,
+                            order=2,
+                            # override.aes=list(color='#555555')
+                            )) +
+  theme(text=element_text(size=8),
+        axis.text.x=element_blank(),
+        # axis.ticks.x=element_blank(),
+        legend.key.height=unit(0.12, 'in'),
+        legend.box='vertical',
+        legend.margin=margin(t=-0.25, unit='cm'))
+
+p3 = crop_plots$Soy +
+  labs(tag='b)',
+       title=NULL) +
+  # scale_color_manual(values=c('#E8601C',
+  #                             '#4EB265',
+  #                             '#1965B0')) +
+  guides(color=guide_legend(ncol=3, order=1),
+         shape=guide_legend(ncol=2,
+                            order=2,
+                            # override.aes=list(color='#555555')
+                            )) +
+  theme(text=element_text(size=8),
+        legend.key.height=unit(0.12, 'in'),
+        axis.text.x=element_blank(),
+        # axis.ticks.x=element_blank(),
+        legend.box='vertical',
+        legend.margin=margin(t=-0.25, unit='cm'))
+
+p4 = crop_plots$overyield +
+  labs(tag='c)') +
+  # scale_color_manual(values=c('#1965B0',
+  #                             '#4EB265',
+  #                             '#E8601C')) +
+  guides(color=guide_legend(ncol=3, order=1),
+         shape=guide_legend(ncol=2,
+                            order=2,
+                            # override.aes=list(color='#555555')
+                            )) +
+  theme(text=element_text(size=8),
+        legend.key.height=unit(0.12, 'in'),
+        legend.box='vertical',
+        legend.margin=margin(t=-0.25, unit='cm'))
+```
+
+
+```{r fig.height=4.5, fig.width=4.5}
+grid.arrange(grobs=list(p2, p3, p4), nrow=3)
+```
+
+```{r}
+here('Results', 'Figure 4 - Overyielding.jpg') %>% 
+  jpeg(width=4, height=4.5, units='in', res=300)
+grid.arrange(grobs=list(p2, p3, p4), nrow=3)
+dev.off()
+```

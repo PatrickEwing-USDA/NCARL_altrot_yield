@@ -1,0 +1,1075 @@
+---
+title: "Part 4: Niche Complimentarity"
+subtitle: "Created March, 2023"
+author: "PME"
+date: "`r format(Sys.time(), '%d %B, %Y, %H:%M')`"
+knit: (function(inputFile, encoding) {
+  rmarkdown::render(inputFile, encoding=encoding, output_dir=here::here('Results'))})
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    df_print: paged
+    code_folding: hide
+  pdf_document: default
+  word_document: default
+---
+
+
+# Overview
+
+In Part 2, we saw that high-yielding rotations are often, but not always, less
+reliable. In Part 4, we will focus on the reliability question. Specifically,
+do certain rotations spread risk to weather extremes?
+
+Approach:
+
+1. Assess overall correlation of yield among individual crops within a rotation, the
+mean of the correlation matrix.
+2. Assess susceptibility/specialization of individual crops to different weather patterns.
+
+
+## Load
+```{r message=FALSE, warning=FALSE}
+libs = c(
+  'here',
+  'magrittr',
+  'tidyr',
+  'lme4',
+  'car',
+  'ggplot2',
+  'gridExtra',
+  'ggdendro',
+  'ggtext',
+  'wesanderson',
+  'emmeans',
+  'multcomp',
+  'vegan',
+  'factoextra',
+  'glmnet' # for variable selection
+)
+
+for (i in libs) {
+  if (!require(i, character.only=TRUE)) {
+    renv::install(i)
+    library(i, character.only=TRUE)
+  }
+}
+
+se = function(x) sd(x)/sqrt(length(x))
+```
+
+```{r}
+in_dir = 'Data'
+in_crop = 'crop performance.csv'
+in_rot = 'rotation performance.csv'
+in_wet = 'Weather Summary.csv'
+in_ei = 'Figure 2 - EI vs Yield.csv'
+
+out_dir = 'Results'
+
+df = here(in_dir, in_crop) %>% 
+  read.csv
+
+rot = here(in_dir, in_rot) %>% 
+  read.csv
+
+wet = here(in_dir, in_wet) %>% 
+  read.csv
+
+ei = here(out_dir, in_ei) %>% 
+  read.csv
+```
+
+ensure factors are flagged as such
+```{r}
+facts = 
+  c('YEAR', 
+    'ROTATION', 
+    'REP',
+    'CYCLE',
+    'CYCLE_YEAR', 
+    'PLOT')
+df[, facts] %<>% lapply(as.factor)
+rot[, facts[-c(6)]] %<>% lapply(as.factor)
+df[, 'YEAR'] %<>% as.factor
+
+
+
+cycle_text = c(
+  `1`='2001-2004',
+  `2`='2005-2008',
+  `3`='2009-2012',
+  `4`='2013-2016'
+)
+
+df$CYCLE_TEXT = df$CYCLE %>% 
+  as.character %>% 
+  cycle_text[.]
+
+rot$CYCLE_TEXT = rot$CYCLE %>% 
+  as.character %>% 
+  cycle_text[.]
+
+# for and convenience
+dodge = 0.8
+se_hilo = function(x) mean_se(x)[, -c(1)]
+corner = function(x, n=6) x[1:n, 1:n]
+
+# rot_colors = wes_palette('Darjeeling1', 3)
+palette_3 = c('#E8601C',
+              '#4EB265',
+              '#1965B0')
+rot_colors = palette_3 %>% 
+  {c(
+    CS = '#444444',
+    CCaWwS = .[2],
+    CSSwS = .[2],
+    COWwS = .[3],
+    CCSSw = .[3],
+    CPWwS = .[1],
+    CSSwP = .[1]
+  )}
+
+shape_scale = c(16, 17, 15, 3, 7, 8, 5)
+```
+
+# Correlation of crops within rotation
+How correlated are yields within a rotation, on average?
+```{r}
+rotations = list(
+  CCaWwS = c('Corn', 'Can', 'Wwheat', 'Soy'),
+  CCSSw = c('Corn', 'Corn', 'Soy', 'Swheat'),
+  COWwS = c('Corn', 'Oat', 'Wwheat', 'Soy'),
+  CPWwS = c('Corn', 'Pea', 'Wwheat', 'Soy'),
+  CS = c('Corn', 'Soy'),
+  CSSwP = c('Corn', 'Soy', 'Swheat', 'Pea'),
+  CSSwS = c('Corn', 'Soy', 'Swheat', 'Soy')
+)
+
+tt = split(df, df$REP) %>% 
+  lapply(function(x) aggregate(YIELD ~ YEAR + CURRENT, data=x, mean)) %>% 
+  lapply(pivot_wider, 
+         id_cols=c('YEAR'),
+         names_from=c('CURRENT'), 
+         values_from='YIELD')
+
+tt = lapply(rotations, function(x) {
+  keep_cols=c(x)
+  out = lapply(tt, function(y) {
+    y[, keep_cols]
+  }) %>% 
+    lapply(cor, use='complete.obs') %>% 
+    lapply(function(y) y[upper.tri(y)]) %>% 
+    sapply(mean) %>% 
+    set_names(names(tt))
+  out
+}) %>% 
+  do.call(rbind, .) %>% 
+  data.frame(ROTATION = rownames(.),
+             .) %>% 
+  pivot_longer(cols=where('is.numeric'), 
+               names_to='REP',
+               values_to='YIELD_COR') %>% 
+  as.data.frame
+tt$REP %<>% gsub('X', '', .)
+
+
+```
+
+## Plot: Rotation-level
+```{r}
+mod = lmer(YIELD_COR ~ ROTATION + (1|REP), data=tt)
+
+grp = emmeans(mod, ~ROTATION) %>% 
+  cld(Letters=letters, reverse=TRUE, p.adjust='fdr') %T>%
+  print
+```
+
+
+```{r}
+se_hi = function(x) mean(x) + sd(x)/sqrt(length(x))
+se_lo = function(x) mean(x) - sd(x)/sqrt(length(x))
+
+ggplot(tt,
+       aes(x=ROTATION,
+           y=YIELD_COR,
+           fill=ROTATION)) +
+  scale_fill_brewer(palette='Paired') +
+  geom_hline(aes(yintercept=0),
+             color='gray',
+             size=0.2) +
+  stat_summary(fun=mean,
+               geom='col') +
+  stat_summary(fun.max=se_hi,
+               fun.min=se_lo,
+               geom='errorbar',
+               # position=position_dodge(width=0.8),
+               width=0) +
+  geom_text(data=grp,
+            aes(x=ROTATION,
+                y=0.02, 
+                label=trimws(.group)),
+            inherit.aes=FALSE) +
+  labs(x=NULL,
+       y='Correlation of Crop Yield\nWithin Rotation') +
+  guides(fill='none') +
+  theme(panel.background=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.x=element_text(vjust=10),
+        text=element_text(size=10))
+```
+
+
+
+## Plot: Among individual crops
+```{r}
+tt = aggregate(YIELD ~ YEAR + CURRENT + REP, data=df, mean) %>% 
+  pivot_wider(id_cols=c('REP', 'YEAR'),
+              names_from='CURRENT', 
+              values_from='YIELD') %>% 
+  split(., .$REP) %>% 
+  lapply(function(x) {
+    out = cor(x[, -c(1,2)], use='complete.obs')
+    out[!upper.tri(out)] = NA
+    out %<>% 
+      data.frame(
+        CROP1 = rownames(.),
+        .
+      ) %>% pivot_longer(cols=where('is.numeric'),
+                          names_to='CROP2') %>% 
+      na.omit %>% 
+      as.data.frame
+    out
+  }) %>% 
+  do.call(rbind, .)
+tt$REP = rownames(tt) %>% 
+  strsplit('\\.') %>% 
+  sapply('[', 1)
+
+tt_mean = aggregate(value ~ CROP1 + CROP2, data=tt, mean)
+
+
+ggplot(tt_mean,
+       aes(x=CROP1,
+           y=CROP2,
+           fill=value)) +
+  scale_y_discrete(limits=rev) +
+  scale_fill_distiller(limits=c(-1, 1),
+                       na.value='white',
+                       palette='RdBu') +
+  geom_tile() +
+  geom_text(aes(label=ifelse(is.na(value), '', round(value, 3))),
+            size=3) +
+  labs(x=NULL,
+       y=NULL, 
+       fill='Yield\nCorrelation') +
+  theme(panel.background=element_blank(),
+        axis.ticks=element_blank(),
+        text=element_text(size=10))
+```
+Can probably clean this up, but clearly the strongest positive correlations are
+among corn, soy, and pea; and among the small grains. The small grains and warm
+season crops are not correlated strongly. 
+
+## Clusters of weather response groups
+```{r}
+clust = aggregate(YIELD ~ YEAR + CURRENT, data=df, mean) %>% 
+  pivot_wider(id_cols='YEAR', 
+              names_from=c('CURRENT'),
+              values_from='YIELD') %>% 
+  as.data.frame %>% 
+  set_rownames(., .$YEAR) %>% 
+  .[, -c(1)] %>%
+  as.matrix %>% 
+  apply(2, scale) %>% 
+  t
+```
+
+
+```{r}
+tt = fviz_nbclust(clust, 
+             FUN=hcut, 
+             method='silhouette',
+             hc_method='complete',
+             hc_metric='pearson',
+             k.max=nrow(clust)-1)
+tt
+```
+
+
+```{r}
+.calc_silhouette = function(k, x, d) {
+  require(cluster)
+  hcut(x, k) %>% 
+    .[['cluster']] %>% 
+    silhouette(d) %>% 
+    .[, 'sil_width'] %>% 
+    mean
+}
+
+calc_silhouette = function(x, max_k=nrow(x)-1) {
+  d = dist(x)
+  all_k = seq(2, max_k, by=1)
+  sils = sapply(all_k, .calc_silhouette, x, d) %>% 
+    c(0, .)
+  # names(sils) = c(1, all_k)
+  return(sils)
+}
+
+best_k = calc_silhouette(clust) %>% 
+  which.max()
+
+```
+`r best_k` clusters it is. 
+
+```{r}
+clusters = 
+  hcut(clust, 
+       k=best_k,
+       hc_method='complete',
+       hc_metric='euclidean',
+       graph=TRUE)
+```
+
+
+```{r}
+plot(clusters)
+```
+```{r}
+clusters$cluster %>% 
+  sort %>% 
+  cbind(cluster=.)
+```
+
+These clusters are arbitrarily named, so no problem re-label to make the writing 
+a bit clearer. 
+```{r}
+clusters_reid = c(3,2,1)
+clusters$cluster %<>%
+  clusters_reid[.] %>% 
+  set_names(names(clusters$cluster))
+
+clusters$cluster %>% 
+  sort %>% 
+  cbind(cluster=.)
+```
+
+## Weather response and yield stability
+```{r}
+weather_diversity = function(rotation, clusters, key, index=c('richness', 'inverse_simpson', 'gini_simpson')) {
+  index = match.arg(index)
+  
+  # get rotation information
+  rotation_crops = key[[rotation]]
+  rotation_length = length(rotation_crops)
+  
+  # reassign crops as as weather groups
+  crop_clusters = clusters$cluster
+  crop_groups = crop_clusters[rotation_crops]
+  
+  if (index=='richness') {
+    out = unique(crop_groups) %>% 
+      length
+    
+  } else if (index=='inverse_simpson') {
+    
+    # Pr(each group occurrence)
+    out = tapply(crop_groups, crop_groups, length) %>% 
+      divide_by(rotation_length)
+    # sum square and 
+    out = 1/sum(out^2)
+  } else if (index=='gini_simpson') {
+    out = tapply(crop_groups, crop_groups, length) %>% 
+      divide_by(rotation_length)
+    out = 1-(sum(out^2))
+  }
+  
+  return(out)
+}
+
+ei$WEATHERDIV = sapply(ei$ROTATION, weather_diversity, clusters, rotations, 'inverse_simpson')
+ei %<>% merge(unique(rot[, c('ROTATION', 'CROP_DIV')]))
+```
+
+## stability vs weather or diversity
+```{r}
+ggplot(ei, aes(x=CROP_DIV, y=WEATHERDIV, color=ROTATION)) +
+  geom_point(position=position_jitter(width=0.05, 
+                                      height=0.05),
+             alpha=0.5)
+```
+```{r}
+cor(ei[, c('SLOPE', 'WEATHERDIV', 'CROP_DIV')])
+
+```
+
+```{r}
+wetgrp_mod = lmer(SLOPE ~ WEATHERDIV + CROP_DIV + (1|REP), data=ei)
+Anova(wetgrp_mod, test.statistic='F')
+```
+Crop diversity doesn't matter as much as weather diversity. 
+
+
+
+```{r fig.height=2.5, fig.width=3}
+mm = lm(SLOPE ~ WEATHERDIV, data=ei) 
+rsq = mm %>% 
+  summary %>% 
+  .$r.squared %>% 
+  round(3) %>% 
+  paste0('italic(r)^2==', .)
+p_val = mm %>% 
+  Anova(test.statistic='F') %>% 
+  .[1, 4]
+p_val = ifelse(p_val < 0.001, 
+               'italic(p)<0.001', 
+               paste0('italic(p)==', round(p_val, 3)))
+```
+
+
+```{r fig.height=2.5, fig.width=3}
+plt_stability_weather = 
+  ggplot(ei,
+         aes(x=WEATHERDIV,
+             y=SLOPE,
+             shape=ROTATION)) +
+  scale_shape_manual(values=shape_scale) +
+  geom_point(position=position_jitter(width=0.03, height=0)) +
+  geom_smooth(aes(shape=NULL),
+              method='lm',
+              formula='y~x',
+              color='black',
+              size=0.1,
+              alpha=0.1) +
+  annotate(geom='text',
+           x=1.25,
+           y=0.400,
+           label=rsq,
+           size=2.5,
+           parse=TRUE) +
+    annotate(geom='text',
+           x=1.25,
+           y=0.350,
+           label=p_val,
+           size=2.5,
+           parse=TRUE) +
+  labs(x='Diversity of Weather Responses [*S*<sup>-1</sup>]',
+       y='Weather Susceptibility Index [a.u.]',
+       shape=NULL) +
+  # guides(shape=guide_legend(ncol=2)) +
+  theme(panel.background=element_blank(),
+        legend.key=element_blank(),
+        legend.position=c(0.85, 0.8),
+        legend.key.height=unit(0.12, 'in'),
+        axis.title.x=element_markdown(),
+        text=element_text(size=8))
+plt_stability_weather
+```
+
+
+
+# Weather Dependency of Individual Crops
+
+This will be via redundancy analysis. Weather patterns will be used to separate different years, and crop yields will the be projected onto those weather patterns. 
+
+We can follow up using linear models for individual crops. 
+
+## RDA
+
+1. Average crop yields within crop-rep-year. Since corn and soybean are so common
+we don't want them to dominate the variance of all species observed.
+2. Transform to a table of year ~ crop-rep. Scale within crop-rep. 
+3. RDA yields ~ weather
+
+We can get an R-squared and p-value from this but strictly speaking it's a test 
+of whether years had different weather patterns, not whether crops respond 
+to different weather patterns.
+
+Here are the transformed crop yields (columns are scaled). We'll use imputed 
+yields (mostly canola) because otherwise we need to drop entire years of data.
+```{r}
+crop_yields = aggregate(YIELD ~ YEAR + CURRENT + REP, data=df, mean) %>% 
+  pivot_wider(values_from='YIELD', names_from='YEAR') %>% 
+  as.data.frame
+
+
+Y = crop_yields
+Y[, c('CURRENT', 'REP')] = NULL
+
+cn = with(crop_yields,
+          paste(CURRENT,
+                REP,
+                sep='_'))
+rn = colnames(Y)
+
+Y %<>% 
+  as.matrix %>% 
+  apply(1, scale) %>%
+  set_colnames(cn) %>% 
+  set_rownames(rn)
+
+corner(Y)
+```
+
+Line up weather (avoiding avg_maxt)
+```{r}
+drop = colnames(wet) %>% 
+  grepl('AVG_MAXT', .)
+X = wet[, !drop]
+rownames(X) = X$YEAR
+X$YEAR = NULL
+X = X[rownames(Y), ] %>% 
+  lapply(scale) %>% 
+  data.frame
+head(X)
+```
+
+Ordinate.
+```{r}
+ff = paste(colnames(X), collapse='+') %>% 
+  paste('Y ~', .) %>% 
+  formula
+ord = rda(ff, data=X)
+screeplot(ord)
+```
+
+3 useful axes. 
+
+```{r}
+tt = rda(Y)
+tt_scores = scores(tt, display='species') %>% 
+  as.data.frame
+tt_scores$CROP = strsplit(rownames(tt_scores), '_')  %>% 
+  do.call(rbind, .) %>% 
+  .[, 1]
+ggplot(tt_scores,
+       aes(x=PC1,
+           y=PC2,
+           color=CROP)) +
+  geom_point() +
+  scale_color_brewer(palette='Paired')
+```
+
+
+### Plot 
+
+(plotting function)
+```{r}
+plot_ord = function(ordination, axes=c(1,2), lab_color='Weather', lab_fill='Crop') {
+
+  # select axes and infer information about them
+  axnames = paste0("RDA", axes)
+  xax = axnames[1]
+  yax = axnames[2]
+  variances = summary(ordination)$cont$importance[2, axes]*100
+  
+  # generate scores for columns
+  cropscores = scores(ordination, display='sp', choices=axes) %>% 
+    as.data.frame
+  cropscores[c('CURRENT', 'REP')] = strsplit(rownames(cropscores), '_') %>% 
+    do.call(rbind, .)
+  cropscores
+  
+  # generate scores for predictors
+  weatherscores = scores(ordination, display='bp', choices=axes) %>% 
+    as.data.frame
+  weatherscores$zero = 0
+  weatherscores$label = rownames(weatherscores)
+  weatherscores$color = grepl('PRECIP', weatherscores$label) %>% 
+    sapply(ifelse, 'Precipitation', 'Temperature')
+  
+  # create labels for predictors
+  weathertext = weatherscores
+  weathertext[c(xax, yax)] %<>% lapply('*', 1.1)
+  
+  # Plot
+  ggplot(cropscores,
+         aes_string(x=xax,
+                    y=yax,
+                    fill='CURRENT')) +
+    coord_equal() +
+    # scale_x_continuous(limits=c(-0.7, 0.7),
+    #                    breaks=seq.int(-6, 6, by=2)/10) +
+    # scale_shape_manual(values=c(15:18, 7, 8, 11)) +
+    scale_fill_brewer(palette='Paired') +
+    scale_color_manual(values=c('steelblue4', 'tomato4')) +
+    geom_hline(aes(yintercept=0),
+               color='lightgray') +
+    geom_vline(aes(xintercept=0),
+               color='lightgray') +
+    geom_point(size=4,
+               alpha=1,
+               shape=21,
+               color='darkgray') +
+    geom_segment(data=weatherscores,
+                 aes(x=zero,
+                     y=zero,
+                     xend=.data[[xax]],
+                     yend=.data[[yax]],
+                     color=color),
+                 arrow=arrow(length=unit(0.05, 'inches')),
+                 alpha=0.5,
+                 inherit.aes=FALSE) +
+    geom_text(data=weathertext,
+              aes_string(x=xax,
+                         y=yax,
+                         label='label',
+                         color='color'),
+              size=4,
+              alpha=0.7,
+              inherit.aes=FALSE) +
+    labs(x=paste(xax, ' [', signif(variances[1], 2), '%]', sep=''),
+         y=paste(yax, ' [', signif(variances[2], 2), '%]', sep=''),
+         color=lab_color,
+         fill=lab_fill) +
+    theme_minimal() +
+    theme(panel.grid=element_blank())
+}
+```
+
+
+```{r fig.width=6, fig.height=10}
+grid.arrange(plot_ord(ord), plot_ord(ord, axes=c(1,3)), nrow=2)
+```
+
+Small grains like a warm establishment and dislike hot summers. Everything likes 
+more moisture, especially corn, soybeans, and winter wheat. Primary responses of
+small grains vs corn and soybean are orthogonal. Canola is negatively correlated 
+with corn, soybean, winter wheat, and pea. 
+
+### Plot for export
+```{r fig.height=3, figh.width=3}
+plot_export_ord = function(ordination, axes=c(1,2), lab_color='Weather', lab_shape='Crop') {
+
+  # select axes and infer information about them
+  axnames = paste0("RDA", axes)
+  xax = axnames[1]
+  yax = axnames[2]
+  variances = summary(ordination)$cont$importance[2, axes]*100
+  
+  # generate scores for columns
+  cropscores = scores(ordination, display='sp', choices=axes) %>% 
+    as.data.frame
+  cropscores[c('CURRENT', 'REP')] = strsplit(rownames(cropscores), '_') %>% 
+    do.call(rbind, .)
+  cropscores$CLUSTER = clusters$cluster[cropscores$CURRENT] %>%
+    factor
+  
+  hull = split(cropscores, cropscores$CURRENT) %>% 
+    lapply(function(x) {
+      tt = x[, c('CURRENT', xax, yax)] %>% 
+        .[chull(.[, c(2, 3)]), ]
+    }) %>% 
+    do.call(rbind, .)
+  hull$CLUSTER = clusters$cluster[hull$CURRENT] %>% 
+    factor
+  
+  
+  prettycrops = c(
+    Corn = 'Corn',
+    Soy = 'Soybean',
+    Pea = 'Pea', 
+    Wwheat = 'WinWheat',
+    Swheat = 'SprWheat',
+    Oat = 'Oats',
+    Can = 'Canola'
+  )
+  centers = sapply(c(xax, yax), 
+                 function(x) tapply(cropscores[, x], cropscores$CURRENT, mean)) %>% 
+  as.data.frame
+  centers$CURRENT = prettycrops[rownames(centers)]
+  
+  # generate scores for predictors
+  weatherscores = scores(ordination, display='bp', choices=axes) %>% 
+    as.data.frame
+  weatherscores$zero = 0
+  weatherscores$label = rownames(weatherscores)
+  weatherscores$color = grepl('PRECIP', weatherscores$label) %>% 
+    sapply(ifelse, 'Precipitation', 'Temperature')
+  
+  # create labels for predictors
+  weathertext = weatherscores
+  weathertext[c(xax, yax)] %<>% lapply('*', 1.1)
+  weathertext$label_short = strsplit(weathertext$label, '_') %>% sapply('[', 1)
+  
+  # Plot
+  ggplot(cropscores,
+         aes_string(x=xax,
+                    y=yax)) +
+    coord_equal(clip='off') +
+    # scale_x_continuous(limits=c(-0.7, 0.7),
+    #                    breaks=seq.int(-6, 6, by=2)/10) +
+    # scale_shape_manual(values=c(15:18, 7, 8, 11)) +
+    scale_fill_manual(values=palette_3) +#wes_palette('Darjeeling1', best_k)) +
+    scale_color_manual(values=c('steelblue4', 'tomato4')) +
+    scale_shape_manual(values=rep(20, 7)) +
+    geom_hline(aes(yintercept=0),
+               color='lightgray',
+               size=0.1) +
+    geom_vline(aes(xintercept=0),
+               color='lightgray',
+               size=0.1) +
+    geom_point(aes(fill=CLUSTER),
+               size=3,
+               shape=21,
+               color='darkgray',
+               alpha=0.5) +
+    geom_segment(data=weatherscores,
+                 aes(x=zero,
+                     y=zero,
+                     xend=.data[[xax]],
+                     yend=.data[[yax]],
+                     color=color),
+                 arrow=arrow(length=unit(0.03, 'inches')),
+                 alpha=0.5,
+                 inherit.aes=FALSE,
+                 size=0.1) +
+    geom_text(data=weathertext,
+              aes_string(x=xax,
+                         y=yax,
+                         label='label_short',
+                         color='color'),
+              size=2,
+              alpha=0.7,
+              inherit.aes=FALSE) +
+    # geom_polygon(data=hull,
+    #              aes(shape=CURRENT,
+    #                  fill=CLUSTER),
+    #              linewidth=0.2,
+    #              # fill='darkgray',
+    #              alpha=0.5) +
+    geom_text(data=centers,
+              aes_string(x=xax,
+                         y=yax,
+                         label='CURRENT'),
+              color='black',
+              size=2.5) +
+    labs(x=paste(xax, ' [', signif(variances[1], 2), '%]', sep=''),
+         y=paste(yax, ' [', signif(variances[2], 2), '%]', sep=''),
+         color=' ',
+         fill='Weather\nResponse Group') +
+    guides(fill=guide_legend(title.position='top',
+                             label.position='bottom', 
+                             direction='horizontal'),
+           color=guide_legend(direction='vertical')) +
+    theme(panel.background=element_blank(),
+          text=element_text(size=8),
+          legend.key.height=unit(0.12, 'in'),
+          legend.key=element_blank(),
+          legend.margin=margin(t=-5, b=-5),
+          legend.position='bottom')
+}
+
+plt_crop_weather = plot_export_ord(ord)
+```
+
+```{r fig.height=3, fig.width=3}
+plt_crop_weather
+```
+```{r fig.height=3, fig.width=6.5}
+p1 = plt_crop_weather +
+  labs(tag='a)') +
+  theme(axis.ticks=element_line(linewidth=0.1))
+p2 = plt_stability_weather +
+  labs(tag='b)') +
+  theme(legend.position='bottom',
+        legend.key.width=unit(0.2, 'in'),
+        legend.justification='right',
+        axis.ticks=element_line(linewidth=0.1))
+grid.arrange(p1, p2, nrow=1)
+
+```
+### Export
+```{r}
+here(out_dir, 'Figure 5 - Weather and Stability.jpg') %>% 
+  jpeg(width=6.5, height=3, units='in', res=300)
+grid.arrange(p1, p2, nrow=1)
+dev.off()
+```
+
+
+## Individual crops
+Don't use imputed data in this case. 
+```{r}
+crop_predictors = list(
+  Warm = c('AprMay', 'MayJun', 'JunJul', 'JulAug', 'AugSep'),
+  Cool = c('MarApr', 'AprMay', 'MayJun', 'JunJul', 'JulAug')
+)
+crop_predictors[c('Oat', 'Pea', 'Can', 'Wwheat', 'Swheat')] = 
+  lapply(1:5, function(x) crop_predictors[['Cool']])
+crop_predictors[c('Corn', 'Soy')] = 
+  lapply(1:2, function(x) crop_predictors[['Warm']])
+
+crop_predictors %<>% lapply(function(x) {
+  c(paste0(x, '_PRECIP'),
+    paste0(x, '_MEANT'))
+})
+
+
+get_predictors = function(x, data_list, predictors) {
+  tt = data_list[[x]]
+  message(x)
+  
+  drop = !grepl(x, colnames(predictors)) & grepl('FLOWER', colnames(predictors))
+  X = predictors[, !drop] %>% 
+    set_rownames(., .[, 'YEAR'])
+  X[, 'YEAR'] = NULL
+  X %<>% as.matrix
+  # expand to match replicates
+  X = X[as.character(tt$YEAR), , drop=FALSE]
+  # check to ensure just keeping relevant weather, including flowering temp
+  keep_predictors = colnames(X) %in% crop_predictors[[x]]
+  X = X[, keep_predictors, drop=FALSE] %>% 
+    scale
+  # keep = sapply(weather_months[[x]], function(y) {
+  #   grepl(y, colnames(X))
+  # }) %>% 
+  #   apply(1, any)
+  # X = X[, keep]
+  # X %<>% scale
+  
+  # remove plot, and rep effects
+  partial = paste('YIELD ~', error_structure) %>% 
+    formula %>% 
+    lmer(data=tt) %>% 
+    residuals %>% 
+    matrix %>% 
+    scale
+  
+  # identify predictors using lasso
+  # mod = glmnet(X, partial, alpha=1, intercept=FALSE)
+  cv_mod = cv.glmnet(X, partial, alpha=.9, intercept=FALSE)
+  mat = coef(cv_mod, s='lambda.1se')
+  # is_kept = mat[, 1] != 0
+  # out = rownames(mat)[is_kept]
+  # out = out[-c(1)]
+  out = mat
+  return(out)
+}
+
+test_predictors = function(x, data_list, predictors, lasso) {
+  
+  
+  dd = data_list[[x]] %>% 
+    merge(predictors, by='YEAR')
+  
+  keep = lasso[[x]] %>% 
+    .[,1] !=0
+  mod = names(keep)[keep] %>% 
+    paste(collapse='+') %>% 
+    paste('YIELD ~', .) %>% 
+    formula %>% 
+    lm(data=dd)
+  
+  return(mod)
+}
+
+process_test = function(x, alpha=0.05) {
+
+  levels = data.frame(
+    p_val = c(1, 0.1, 0.05, 0.01, 0.001),
+    symbol = c('', '.', '*', '**', '***')
+  )
+    
+  .set_symbol = function(value, levels) {
+    test = {value < levels$p_val} %>% 
+      which %>% 
+      max
+    return(levels[test, 'symbol'])
+  }
+  
+  test = Anova(x)
+  test = data.frame(
+    PRED = rownames(test),
+    SYMBOL = sapply(test[, 4], .set_symbol, levels)
+  ) %>% 
+    na.omit
+  return(test)
+}
+
+process_predictors = function(name, preds) {
+  x = preds[[name]]
+  out = data.frame(
+    PRED = slot(x, 'Dimnames')[[1]],
+    CROP = name,
+    COEF = matrix(x))
+  return(out)
+}
+```
+
+
+```{r}
+error_structure = '(1|REP)'
+# cycle = variety effects
+# rep = block effects
+# rep*cycle_year = plot effects
+
+
+subdf = subset(df, !IMPUTED) %>% 
+  aggregate(YIELD ~ CURRENT + REP + CYCLE + CYCLE_YEAR + YEAR,
+            data=., 
+            mean) %>% 
+  split(., .$CURRENT)
+
+
+crp = names(subdf) %>% 
+  set_names(names(subdf))
+preds = lapply(crp, get_predictors, subdf, wet)
+pred_test = lapply(crp, test_predictors, subdf, wet, preds) %>% 
+  lapply(process_test) %>% 
+  do.call(rbind, .) %>% 
+  data.frame(CROP = strsplit(rownames(.), '\\.') %>% sapply('[', 1),
+             .) %>% 
+  set_rownames(NULL)
+
+preds = lapply(crp, process_predictors, preds) %>% 
+  do.call(rbind, .) %>% 
+  set_rownames(NULL) %>% 
+  merge(pred_test, by=c('PRED', 'CROP'))
+
+
+preds %<>% subset(PRED != '(Intercept)')
+preds$PRED[grepl('FLOWER', preds$PRED)] %<>%
+  strsplit('_') %>% 
+  lapply('[', -c(1)) %>% 
+  sapply(paste, collapse='_')
+
+# test = lapply(crp, test_predictors, subdf, preds)
+# lapply(test, Anova)
+
+```
+
+```{r}
+preds %<>% pivot_wider(id_cols='CROP', names_from='PRED', values_from='COEF')
+preds[is.na(preds)] = 0
+preds %<>% pivot_longer(cols=where('is.numeric'),
+                        names_to='PRED',
+                        values_to='COEF') %>% 
+  merge(pred_test, by=c('CROP', 'PRED'))
+```
+
+### Plot
+```{r}
+fact_lvl = unique(preds$PRED)
+is_precip = grepl('PRECIP', fact_lvl)
+preds$PRED %<>% factor(., levels=c(fact_lvl[!is_precip], fact_lvl[is_precip]))
+preds$LABEL = with(preds, paste0(round(COEF, 3), SYMBOL))
+
+lvls = c(
+  'MarApr_', 
+  'AprMay_',
+  'MayJun_', 
+  'JunJul_',
+  'JulAug_',
+  'AugSep_') %>% 
+  rep(2) %>% 
+  paste0(c(rep('MEANT', 6), rep('PRECIP', 6)))
+
+keep = grepl('\\*', preds$SYMBOL)
+preds$PRED %<>% factor(levels=lvls)
+preds$CROP %<>% factor(levels=clusters$cluster %>% sort %>% names)
+
+ggplot(preds[keep, ],
+       aes(y=CROP,
+           x=PRED,
+           fill=COEF)) +
+  geom_tile() +
+  scale_fill_distiller(limits=c(-1, 1), palette='RdBu') +
+  geom_text(aes(label=LABEL),
+            size=3) +
+  labs(x=NULL,
+       y=NULL,
+       fill='Standard\nCoefficient') +
+  theme(panel.background=element_blank(),
+        axis.text.x=element_text(angle=45, hjust=1, vjust=1),
+        axis.ticks=element_blank(),
+        text=element_text(size=10))
+  
+```
+This confirms what was obvious from the RDA. Small grains like warm establishment Soy
+and corn like rainfall, though hot summers are also bad. 
+
+### Combine with clusters
+```{r}
+plot(clusters)
+```
+
+```{r fig.height=2.5, fig.width=3}
+plt_clust_data = as.dendrogram(clusters) %>% 
+  dendro_data(type='rectangle')
+leaves = label(plt_clust_data)
+leaves$group = clusters$cluster[leaves$label] %>% 
+  factor
+plt_clusters =
+  ggplot(segment(plt_clust_data)) +
+  scale_color_manual(values=wes_palette('Darjeeling1', 3),
+                     guide='none') +
+  geom_segment(aes(x=x,
+                   y=y,
+                   xend=xend,
+                   yend=yend),
+               linewidth=0.1) + 
+  geom_text(data=leaves,
+            aes(x=x,
+                y=y,
+                label=label,
+                color=group),
+            hjust=-0.1,
+            size=3) +
+  coord_flip(clip='off') +
+  scale_y_reverse() +
+  labs(y='Height',
+       x=NULL) +
+  theme(panel.background=element_blank(),
+        axis.ticks.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.x=element_line(linewidth=0.1),
+        text=element_text(size=10),
+        plot.margin=margin(t=10, b=35, r=35))
+
+plt_clusters
+```
+
+```{r}
+y_order = leaves$label[order(leaves$x)]
+preds$CROP %<>% factor(levels=y_order)
+plt_weathereff = 
+  ggplot(preds[keep, ],
+         aes(y=CROP,
+             x=PRED,
+             fill=COEF)) +
+  geom_tile() +
+  scale_fill_distiller(limits=c(-1, 1), palette='RdBu') +
+  geom_text(aes(label=LABEL),
+            size=2) +
+  labs(x=NULL,
+       y=NULL,
+       fill='Standard\nCoefficient') +
+  theme(panel.background=element_blank(),
+        axis.text.x=element_text(angle=45, hjust=1, vjust=1),
+        axis.ticks=element_blank(),
+        text=element_text(size=10),
+        legend.title=element_text(size=8),
+        axis.text.y=element_blank())
+
+plt_weathereff
+```
+
+```{r fig.height=3.5, fig.width=6.5}
+marrangeGrob(grobs=list(plt_clusters, plt_weathereff), 
+             layout_matrix=matrix(c(1,2,2,2,2), nrow=1),
+             nrow=1, ncol=2, top=NULL)
+```
+
+```{r}
+here(out_dir,
+     'SUPPL FIGURE - Weather Dependence of Crops and Clusters.jpg') %>% 
+  jpeg(height=3.5, width=6.5, units='in', res=300)
+marrangeGrob(grobs=list(plt_clusters, plt_weathereff), 
+             layout_matrix=matrix(c(1,2,2,2,2), nrow=1),
+             nrow=1, ncol=2, top=NULL)
+dev.off()
+```
+

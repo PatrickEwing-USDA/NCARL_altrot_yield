@@ -1,0 +1,201 @@
+---
+title: "1a. Yield Data Processing"
+subtitle: "Created January 12, 2023"
+author: "PME"
+date: "`r format(Sys.time(), '%d %B, %Y, %H:%M')`"
+knit: (function(inputFile, encoding) {
+  rmarkdown::render(inputFile, encoding=encoding, output_dir=here::here('Results'))})
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    df_print: paged
+    code_folding: hide
+  pdf_document: default
+  word_document: default
+---
+
+Data processing for the Brookings Alt-Rotation Yield Dataset.
+
+Goals:
+
+1. Make new factors and combine with rotation characteristics
+2. Impute missing values and flag as such
+3. Estimate protein and calorie production 
+
+# Load
+```{r message=FALSE}
+renv::install('Matrix')  # for some reason this doesn't play well with renv. 
+libs = c(
+  'here',
+  'magrittr',
+  'tidyr',
+  'lme4'
+)
+
+for (i in libs) {
+  if (!require(i, character.only=TRUE)) {
+    renv::install(i)
+    library(i, character.only=TRUE)
+  }
+}
+
+se = function(x) sd(x)/sqrt(length(x))
+```
+
+```{r}
+in_dir = file.path('Data', 'Inputs')
+in_df = 'Master.csv'
+in_rot = "rotation_metrics.csv"
+
+out_dir = 'Results'
+out_data = 'Data'
+
+df = here(in_dir, in_df) %>% 
+  read.csv(stringsAsFactors=FALSE)
+
+rot = here(in_dir, in_rot) %>% 
+  read.csv(stringsAsFactors=FALSE)
+```
+
+## Set column names and make factors
+```{r}
+names(df) %<>% gsub('_KGHA', '', .)
+is_factor = c('REP', 'CYCLE', 'ROTATION', 'YEAR', 'CURRENT', 'PREVIOUS')
+df[is_factor] %<>% lapply(as.factor)
+
+type_convert = function(x, as.is=TRUE) type.convert(x, as.is=as.is)
+```
+
+Make a factor, year in cycle
+```{r}
+df$CYCLE_YEAR = with(df, ((type_convert(YEAR)-1) %% 4) + 1) %>% 
+  factor
+```
+
+
+### Investigate missing data
+```{r}
+table(df$CURRENT, is.na(df$YIELD)) %>% 
+  cbind(PCT = round(100*(.[, 2]/rowSums(.)), 1))
+```
+Sunflower and canola had almost 50% failure. For canola, this was for artificial reasons - 
+winter canola is poorly adapted to the region. So we will impute yields, but selectively ignore
+those years depending on analysis.
+
+For sunflower, yields in general were marred by artifacts of small plots - things like bird and weevil damage, so we will drop all sunflower-containing rotations. 
+
+```{r}
+missing_data = df[is.na(df$YIELD), c('CURRENT', 'YEAR')] %>% 
+  table %T>%
+  print
+```
+Canola had a total failure in 2002, 2007, 2008, and 2013-2016 - just under half
+of years. This was due to poor overwintering - winter canola was grown which is 
+not well adapted to the region, though spring canola is well-adapted. Therefore, 
+yields are good when recorded.
+
+Sunflower had a total failure in 2002, 2006, 2007, 2009, 2012, 2013, and 2016 - again, just under half of years. This was due to bird and weevil damage that make outsized
+impacts on experimental plots. Yields when recorded are problematic, so will drop.
+
+Canola and sunflower both failed in 2002, 2007, 2013, and 2016. 
+
+Pea had a total failure in 2005. 
+
+Flag years with missing data at crop and rotation level. 
+```{r}
+# number of plots with each crop in a given year
+crop_plots = subset(df, YEAR=='2001') %>% 
+  with(tapply(CURRENT, CURRENT, length))
+
+# identify years with missing crop data
+missing_data %<>% 
+  data.frame
+missing_data$CROP_PLOTS = crop_plots[missing_data$CURRENT]
+missing_data$TOTAL_FAIL = with(missing_data, CROP_PLOTS == Freq)
+
+# identify rotation -years with any missing data
+missing_data %<>% merge(df[, c('ROTATION', 'CURRENT')] %>% unique, 
+                        by='CURRENT') %>% 
+  .[, c('CURRENT', 'ROTATION', 'YEAR', 'TOTAL_FAIL')] %>% 
+  pivot_wider(names_from='CURRENT', 
+              values_from='TOTAL_FAIL')
+missing_data$HAS_CROP_FAIL = apply(missing_data[, -c(1:2)], 1, function(x) {
+  ifelse(is.na(any(x)), FALSE, any(x))
+})
+missing_data %<>% 
+  .[c('ROTATION', 'YEAR', 'HAS_CROP_FAIL')] %>% 
+  unique
+
+
+df %<>% merge(missing_data,
+              by=c('YEAR', 'ROTATION'))
+```
+
+# Impute missing crop yields
+Impute missing data by borrowing information from other treatments via BLUP. This assumes a rotation*previous crop effect, a year effect, and a rep effect on each crop's yield and shrinks estimates to the mean yield of a crop depending on how much additional information is available. 
+
+Flag these values, of course. 
+```{r}
+mm = lmer(YIELD ~ (CURRENT|ROTATION:PREVIOUS) + (CURRENT|CYCLE:CYCLE_YEAR) + (CURRENT|REP:PLOT), 
+          data=df, 
+          control=lmerControl(calc.derivs=FALSE))
+imputed_yield = predict(mm, 
+                        df, 
+                        allow.new.levels=TRUE)
+
+# flag missing values as imputed and add to dataframe
+df$IMPUTED = is.na(df$YIELD)
+df[df$IMPUTED, 'YIELD'] = imputed_yield[df$IMPUTED]
+```
+
+
+```{r}
+n_imp = sum(df$IMPUTED)
+pct_imp = {n_imp/nrow(df)} %T>%
+  print
+```
+This imputed `r n_imp` values, which are `r round(pct_imp, 3)*100`% of observations.
+
+
+Drop sunflower. 
+```{r}
+df %<>% .[!grepl('Sf', df$ROTATION), ] %>% 
+  droplevels
+```
+
+# Export
+```{r}
+here(out_data,
+     'crop performance.csv') %>% 
+  write.csv(df, ., row.names=FALSE)
+```
+
+
+# Whole Rotation Metrics
+```{r}
+facts = 
+  c('YEAR', 
+    'ROTATION', 
+    'REP', 
+    'CYCLE',
+    'CYCLE_YEAR',
+    'NSPECIES',
+    'CROP_DIV',
+    'LENGTH',
+    'AGE')
+ff = paste(facts, collapse='+') %>% 
+  paste('YIELD', ., sep='~') %>% 
+  formula
+yields = df %>% 
+  aggregate(ff, data=., mean)
+```
+
+## Export
+```{r}
+here(out_data,
+     'rotation performance.csv') %>% 
+  write.csv(yields, ., row.names=FALSE)
+```
+

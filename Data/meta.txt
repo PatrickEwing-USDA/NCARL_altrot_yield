@@ -1,0 +1,54 @@
+YEAR - year of data collection
+CYCLE - Set of 4 years. This corresponds to the complete 4-year rotations and also a change in crop varieties.
+PLOT - plot, numbering scheme BNN (block, number-number)
+REP - block number
+TRT - treatment number. Each current crop in rotation gets a unique trt number (ex corn in CS, COWwS get different numbers; corn and soy in CCaWwS get different numbers)
+CURRENT - current crop data collected on
+PREVIOUS - previous crop on the rotation
+ROTATION - crop rotation treatment. Format AAAA, where each capital letter abbreviates a crop, in sequence
+LENGTH - length of rotation, in years
+NCROPS - number of unique crops in the rotation
+GRAIN_MOIST - %moisture at harvest
+TWEIGHT - test weight (pounds per bushel). At standard moisture.
+YIELD_KGHA - yield (kilograms per hectare). At standard moisture.
+N_PER - percent N in grain. Moisture corrected? At standard moisture.
+C_PER - percent C in grain. Moisture corrected? At standard moisture.
+
+
+CURRENT CROPS
+Sun - sunflower (dropped rotations with this)
+Corn - corn
+Soy - soybean
+Pea - spring pea
+Swheat - spring weat
+Wwheat - winter wheat
+Oat - oats
+Can - canola
+
+PREVIOUS CROPS
+Sun - sunflower
+Corn - corn
+Soy - soybean
+Pea - spring pea
+Wheat - Wheat in 2000 (establishment year)
+Swheat - spring weat
+Wwheat - winter wheat
+Oat - oats
+Can - canola
+
+ROTATION ABBREVIATIONS
+C - corn
+Ca - canola
+O - oats
+P - spring pea
+S - soybean
+Sf - Sunflower
+Sw - spring wheat
+Ww - Winter wheat
+
+EXAMPLES
+COWwS = Corn-Oats-Winter wheat-Soybean
+CCSSw = Corn-Corn-Soy-Spring wheat
+
+
+

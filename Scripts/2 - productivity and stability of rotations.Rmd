@@ -1,0 +1,702 @@
+---
+title: "Part 2: Productivity vs Stability"
+subtitle: "Created January, 2023"
+author: "PME"
+date: "`r format(Sys.time(), '%d %B, %Y, %H:%M')`"
+knit: (function(inputFile, encoding) {
+  rmarkdown::render(inputFile, encoding=encoding, output_dir=here::here('Results'))})
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    df_print: paged
+    code_folding: hide
+  pdf_document: default
+  word_document: default
+---
+# Overview
+
+Steps:
+
+1. Load
+2. Assess productivity of rotations
+  1. Calculate rotation yield within rotation-block-year
+  2. ANOVA
+3. Environmental index analysis of rotations
+  1. Calculate environmental index = weighted average yield across rotations within block-year.
+  2. Yield vs environmental index
+2. Assess expected yield (means)
+3. Assess buffering (environmental index)
+  1. Rank rep-years by means of all crops
+  2. Run environmental index analysis
+3. Assess productivity-stability Relationships
+
+## Load
+```{r message=FALSE}
+libs = c(
+  'here',
+  'magrittr',
+  'tidyr',
+  'lme4',
+  'car',
+  'ggplot2',
+  'gridExtra',
+  'emmeans',
+  'multcomp',
+  'ggpmisc',
+  'ggExtra',
+  'ggtext'
+)
+
+for (i in libs) {
+  if (!require(i, character.only=TRUE)) {
+    renv::install(i)
+    library(i, character.only=TRUE)
+  }
+}
+
+se = function(x) sd(x)/sqrt(length(x))
+
+# slightly tuned Paired2 from color brewer
+rot_colors = c(
+  CS     = '#444444', # dark gray
+  CCaWwS = '#B2DF8A', # light green
+  CSSwS  = '#33A02C', # green
+  COWwS  = '#FB9A99', # light red
+  CCSSw  = '#E31A1C', # red
+  CPWwS  = '#a89ad0', # light purple
+  CSSwP  = '#6951b6'  # purple
+)
+
+rot_colors = c('#E8601C',
+               '#4EB265',
+               '#1965B0')
+rot_colors %<>% {c(
+  CS = '#444444',
+  CCaWwS = .[2],
+  CSSwS = .[2],
+  COWwS = .[3],
+  CCSSw = .[3],
+  CPWwS = .[1],
+  CSSwP = .[1]
+)}
+```
+
+```{r}
+in_dir = 'Data'
+in_crop = 'crop performance.csv'
+in_rot = 'rotation performance.csv'
+
+out_dir = 'Results'
+
+crop = here(in_dir, in_crop) %>% 
+  read.csv
+
+rot = here(in_dir, in_rot) %>% 
+  read.csv
+```
+
+ensure factors are flagged as such
+```{r}
+facts = 
+  c('YEAR', 
+    'ROTATION', 
+    'REP',
+    'CYCLE',
+    'CYCLE_YEAR')
+crop[, facts] %<>% lapply(as.factor)
+rot[, facts] %<>% lapply(as.factor)
+
+# rot_colors %<>% .[levels(crop$ROTATION)]
+crop[, 'ROTATION'] %<>% factor(levels=names(rot_colors))
+rot[, 'ROTATION'] %<>% factor(levels=names(rot_colors))
+
+# Convert yield to Mg ha
+crop$YIELD = crop$YIELD/1000
+rot$YIELD = rot$YIELD/1000
+```
+
+# Rotation Performance
+This is mean yield across crops within a rotation
+
+## Model and diagnostics
+```{r}
+pred = 'ROTATION'
+rand = '(1|CYCLE/CYCLE_YEAR) + (1|REP/CYCLE_YEAR)'
+resp = 'YIELD'
+
+mod = paste(resp, '~', pred, '+', rand) %>% 
+  formula %>% 
+  lmer(data=rot)
+Anova(mod, test.statistic='F')
+```
+```{r}
+qqPlot(residuals(mod))
+```
+
+```{r}
+plot(mod)
+```
+```{r}
+influencePlot(mod)
+```
+Looks good. 
+
+## Results
+```{r}
+mod_emm = 
+  emmeans(mod, pred) %>% 
+  cld(p.adjust='fdr', Letters=letters, reverse=TRUE) %T>%
+  print
+```
+```{r}
+emmeans(mod, pred) %>% 
+  pairs(adjust='fdr')
+```
+
+
+```{r}
+group_letters = function(x) {
+  grp = x$.group  %>%
+    trimws %>% 
+    strsplit(split="")
+  maxgrp = unlist(x$.group) %>% 
+    as.numeric %>% 
+    max
+  grp %<>% sapply(function(y) {
+    y %<>% as.numeric
+    y = maxgrp - y + 1
+    y %<>% sort(decreasing=FALSE) %>% 
+      letters[.] %>% 
+      paste(collapse='')
+    y
+  })
+  
+  out = data.frame(
+    x[1],
+    GROUP=grp
+  )
+  return(out)
+}
+
+mean_se = function(...) {
+  out = aggregate(..., function(x) {
+    se = sd(x)/sqrt(length(x))
+    mn = mean(x)
+    c(
+      mean=mn,
+      se=se,
+      se_high=mn + se,
+      se_low=mn - se)
+  }) |>
+    lapply(unlist) |>
+    data.frame()
+  
+  nn = length(names(out))
+  nn = seq(nn-3, nn, by=1)
+  names(out)[nn] = c('mean', 'se', 'err_high', 'err_low')
+  return(out)
+}
+```
+
+
+```{r}
+productivity = mean_se(YIELD ~ ROTATION, data=crop) |>
+  merge(mod_emm,
+        by='ROTATION')
+
+productivity_plt = 
+  ggplot(productivity,
+         aes(x=ROTATION,
+             y=mean,
+             fill=ROTATION)) +
+  scale_fill_manual(values=rot_colors) +
+  # scale_fill_brewer(palette='Paired') +
+  geom_col() +
+  geom_errorbar(aes(ymin=err_low,
+                    ymax=err_high),
+                width=0.1) +
+  geom_text(aes(y=err_high+0.450,
+                label=trimws(.group)),
+            size=2.5) +
+  labs(x=NULL,
+       y='Average Yield<br>2001-2016 [Mg ha<sup>-1</sup>]',
+       fill=NULL) +
+  guides(fill='none') +
+  theme(panel.background=element_blank(),
+        axis.title=element_markdown())
+productivity_plt
+```
+## Discussion
+COWwS and CS were highest yielding. CCaWwS and CSSwS were lowest yielding.
+
+# Stability
+
+Via environmental index (mean yield within years, scaled across years)
+
+## Calculate indices
+```{r}
+ei = aggregate(YIELD ~ ROTATION + REP + YEAR, data=crop, mean) %>% 
+  aggregate(YIELD ~ REP + YEAR, data=., mean) # average annual block yields including imputed values
+names(ei) %<>% gsub('YIELD', 'EI', .)
+ei$EI %<>% scale
+
+ei %<>% merge(rot, by=c('REP', 'YEAR'))
+ggplot(ei, 
+       aes(x=EI)) +
+  geom_density()
+```
+## Model and diagnostics
+```{r}
+pred = 'EI*ROTATION'
+rand = 'REP'
+resp = 'YIELD'
+
+mod = paste(resp, '~', pred, '+', rand) %>% 
+  formula %>% 
+  lm(data=ei)
+mod_av = Anova(mod, test.statistic='F') %T>%
+  print
+```
+A significant interaction and a significant main effect of rotation. 
+
+
+```{r}
+qqPlot(residuals(mod))
+```
+
+```{r}
+plot(mod)
+```
+```{r}
+influencePlot(mod)
+```
+Looks good. 
+
+```{r}
+ei_plt = 
+  ggplot(ei,
+         aes(x=EI,
+             y=.data[[resp]],
+             color=ROTATION)) +
+  scale_color_manual(values=rot_colors) +
+  geom_vline(aes(xintercept=0),
+             color='gray',
+             size=0.2) +
+  geom_point(size=0.5) +
+  geom_smooth(method='lm',
+              formula='y~x',
+              se=FALSE,
+              size=0.3) +
+  labs(x='Environmental Index [*σ*]',
+       y='Average Yield<br>[Mg ha<sup>-1</sup>]',
+       color=NULL) + 
+  annotate(geom='text',
+           x=-1.3,
+           y=6.700,
+           label=paste("italic(p)<0.001"),
+           parse=TRUE,
+           size=2.5) +
+  annotate(geom='text',
+           x=-1.3,
+           y=6.100,
+           label=paste("italic(r)^2==", round(summary(mod)$r.squared, 3)),
+           parse=TRUE,
+           size=2.5) +
+  theme(panel.background=element_blank(),
+        legend.key=element_blank(),
+        axis.title=element_markdown())
+ei_plt
+```
+
+
+
+```{r}
+mod_emm = 
+  emtrends(mod, 'ROTATION', 'EI') %>% 
+  cld(adjust='fdr', Letters=letters, reverse=TRUE) %T>%
+  print
+```
+```{r}
+pwpm(emtrends(mod, 'ROTATION', 'EI'), adjust='fdr')
+```
+
+
+```{r}
+stability_plt = 
+  ggplot(mod_emm,
+         aes(x=ROTATION,
+             y=EI.trend,
+             fill=ROTATION)) +
+  scale_fill_manual(values=rot_colors) +
+  geom_col() +
+  geom_errorbar(aes(ymin=lower.CL,
+                    ymax=upper.CL),
+                width=0.1) +
+  geom_text(aes(label=trimws(.group),
+                y=upper.CL+0.1),
+            size=2.5) +
+  labs(x=NULL,
+       y='Weather Susceptibility<br>Index [a.u.]') +
+  guides(fill='none') +
+  theme(panel.background=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.x=element_text(vjust=10),
+        text=element_text(size=10),
+        axis.title=element_markdown())
+stability_plt
+```
+
+# Productivity vs Stability
+```{r}
+pred = "EI:REP:ROTATION"
+rep_ei = paste(resp, pred, sep='~') %>% 
+  formula %>% 
+  lm(data=ei) %>% 
+  coef %>% 
+  .[-c(1)] %>% 
+  data.frame(do.call(rbind, strsplit(names(.), ':')),
+             value=.) %>% 
+  set_rownames(NULL) %>% 
+  set_colnames(c('EI', 'REP', 'ROTATION', 'SLOPE'))
+rep_ei$EI = NULL
+rep_ei$REP %<>% gsub('REP', '', .) %>% 
+  factor(levels=levels(ei$REP))
+rep_ei$ROTATION %<>% gsub('ROTATION', '', .) %>% 
+  factor(levels=levels(ei$ROTATION))
+
+rep_prod = paste(resp, 'REP:ROTATION', sep='~') %>% 
+  formula %>% 
+  aggregate(ei, mean)
+
+cv_prod = paste(resp, 'REP:ROTATION', sep='~') %>% 
+  formula %>% 
+  aggregate(ei, function(x) 100*sd(x)/mean(x)) %>% 
+  set_colnames(c('REP', 'ROTATION', 'CV'))
+
+prod_ei = merge(rep_prod, rep_ei, by=c('REP', 'ROTATION')) %>% 
+  merge(cv_prod, by=c('REP', 'ROTATION'))
+
+ps_mod = lm(SLOPE ~ YIELD, data=prod_ei)
+
+ps_test = Anova(ps_mod) %T>%
+  print
+```
+
+```{r}
+quadrants = data.frame(
+  x = c(3390, 4150, 3800, 3780)/1000,
+  y = c(660, 660, 950, 380)/1000,
+  label = c('Less\nProductive', 
+            'More\nProductive',
+            'Variable',
+            'Stable')
+)
+
+convex_hull = split(prod_ei, prod_ei$ROTATION) %>% 
+  lapply(function(x) {
+    tt = x[, c('ROTATION', 'YIELD', 'SLOPE')] %>% 
+      .[chull(.[, c(2, 3)]), ]
+  }) %>% 
+  do.call(rbind, .)
+
+centers = sapply(c('YIELD', 'SLOPE'), 
+                 function(x) tapply(prod_ei[, x], prod_ei$ROTATION, mean)) %>% 
+  as.data.frame
+centers$ROTATION = rownames(centers)
+```
+
+## Outliers
+The estimate here is the percentage discrepancy of observed weather dependency
+relative to expected weather dependency given a sample unit's productivity. 
+```{r}
+prod_ei$resid = residuals(ps_mod)
+prod_ei$fit = fitted(ps_mod)
+
+ei_ttest = with(prod_ei, tapply(resid/fit, ROTATION, t.test))
+ei_ttest %<>% lapply(function(x) data.frame(diff = x$estimate,
+                                           p_val = x$p.value)) %>% 
+  do.call(rbind, .)
+ei_ttest$p_val %<>% p.adjust(method='fdr')
+ei_ttest[order(ei_ttest$diff),]
+```
+So COWwS is `r round(100*ei_ttest['COWwS', 'diff'], 1)`% less susceptible to 
+weather than expected. 
+
+```{r}
+ei_ttest$SIG = ei_ttest$p_val < 0.05
+```
+
+## Plot
+
+```{r fig.height=4, fig.width=4.5}
+prod_ei$SIG = ei_ttest[prod_ei$ROTATION, 'SIG']
+convex_hull$SIG = ei_ttest[convex_hull$ROTATION, 'SIG']
+
+centers$LABEL = centers$ROTATION %>% 
+  sapply(function(x) {
+    if (ei_ttest[x, 'p_val'] <= 0.05) paste0(x, '*')
+    else x
+  })
+
+
+ps_plt =
+  ggplot(prod_ei, 
+         aes(x=YIELD,
+             y=SLOPE)) +
+  # scale_color_brewer(palette='Paired') +
+  scale_color_manual(values=rot_colors) +
+  scale_fill_manual(values=rot_colors) +
+  # scale_fill_manual(values=rep('black', nrow(centers))) +
+  # scale_color_manual(values=rep('lightgray', nrow(centers))) +
+  geom_vline(aes(xintercept=mean(YIELD)),
+             color='gray',
+             size=0.1,
+             linetype='dashed') +
+  geom_hline(aes(yintercept=mean(SLOPE)),
+             color='gray',
+             size=0.1,
+             linetype='dashed') +
+  geom_point(color='black',
+             size=0.1,
+             shape=20) +
+  geom_smooth(method='lm',
+              formula='y~x',
+              alpha=0.1,
+              color='black',
+              size=0.3) +
+  geom_polygon(data=convex_hull,
+               aes(color=ROTATION,
+                   fill=ROTATION),
+               linewidth=0.2,
+               # fill='darkgray',
+               alpha=0.2) +
+  geom_text(data=centers,
+            aes(label=ROTATION),
+            color='black',
+            size=2) +
+    annotate(geom='text',
+           x=3.400,
+           y=.900,
+           label=paste("italic(p)<", 0.001),#round(ps_test['YIELD', 4], 3)),
+           parse=TRUE,
+           size=2.5) +
+  annotate(geom='text',
+           x=3.400,
+           y=.930,
+           label=paste("italic(r)^2==", round(summary(ps_mod)$r.squared, 3)),
+           parse=TRUE,
+           size=2.5) +
+  geom_text(data=quadrants,
+            aes(x=x,
+                y=y,
+                label=label),
+            color='#666666',
+            size=2.5) +
+  guides(fill='none',
+         color='none') +
+    labs(x='Average Yield, 2001-2016 [Mg ha<sup>-1</sup>]',
+         y='Weather Susceptibility Index [a.u.]',
+         color=NULL) +
+  theme(panel.background=element_blank(),
+        legend.key=element_blank(),
+        axis.title=element_markdown())
+```
+
+
+```{r fig.height=4, fig.width=4.5}
+ps_plt
+```
+
+
+# Risk and Reward
+
+In low, average, and high years, what is the yield of each rotation?
+
+low = bottom 32%, defined by environmental index score (z-score) < -1.  
+High = top 32%, defined by environmental index score (z-score) >= 1.  
+```{r}
+cutoff = qnorm(.75)
+cutoff=1
+
+gen_labels = function(cutoff) {
+  q = pnorm(cutoff)
+  
+  tails = 1-q
+  mid = 1-(2*q)
+  
+  perc = 100*c(tails, mid, tails) %>%
+    round(2) %>% 
+    abs
+  
+  paste(c('Worst', 'Middle', 'Best'),
+        perc) %>% 
+    paste0('%')
+}
+labs = gen_labels(cutoff)
+
+ei$YEAR_TYPE = labs[2]
+ei[ei$EI < -cutoff, 'YEAR_TYPE'] = labs[1]
+ei[ei$EI >= cutoff, 'YEAR_TYPE'] = labs[3]
+
+ei$YEAR_TYPE %<>% factor(levels=labs[3:1])
+
+years_by_type = tapply(ei$YEAR, ei$YEAR_TYPE, function(x) length(unique(x)))
+
+mod = lmer(YIELD ~ YEAR_TYPE * ROTATION + (1|REP/CYCLE_YEAR) + (1|CYCLE/CYCLE_YEAR), data=ei)
+
+qqPlot(residuals(mod))
+```
+
+
+```{r}
+Anova(mod, test.statistic='F')
+```
+
+```{r}
+em = emmeans(mod, ~ ROTATION | YEAR_TYPE)
+
+cld(em, Letters=letters, reversed=TRUE, adjust='fdr')
+```
+
+```{r}
+tt = tapply(ei$YIELD, ei$ROTATION, mean) %>% 
+  sort(decreasing=TRUE)
+
+ei$ROTATION_ORDER = factor(ei$ROTATION, levels=names(tt))
+
+errorbar_quantiles = function(x, range) {
+  y = range/2
+  med = quantile(x, 0.5)
+  low = quantile(x, y)
+  hi = quantile(x, 1-y)
+  return(data.frame(
+    y = med,
+    ymin = low,
+    ymax = hi
+  ))
+}
+
+
+risk_plt = 
+  ggplot(ei,
+         aes(x=ROTATION_ORDER,
+             y=YIELD,
+             color=ROTATION)) +
+  facet_wrap(~YEAR_TYPE, 
+             ncol=1,
+             strip.position='right') +
+  scale_color_manual(values=rot_colors) +
+  stat_summary(fun.data=errorbar_quantiles,
+             geom='pointrange',
+             fun.args=list(range=0.05),
+             size=0.1) +
+  stat_summary(fun.data=errorbar_quantiles,
+               geom='pointrange',
+               fun.args=list(range=0.5),
+               linewidth=1.4,
+               size=0.3) +
+  # stat_summary(fun.data=errorbar_range,
+  #              geom='pointrange') +
+  labs(x=NULL,
+       y='Yield [Mg ha<sup>-1]') +
+  guides(color='none') +
+  theme(panel.grid=element_blank(),
+        panel.background=element_rect(fill='#f7f7f7'),
+        axis.text.x=element_text(angle=90, 
+                                 vjust=0.5, 
+                                 hjust=1),
+        axis.ticks=element_line(linewidth=0.1),
+        strip.background=element_blank(),
+        axis.title=element_markdown())
+risk_plt
+```
+Emphasizing that COWwS yields are quite reliable in poor years, with low downside
+risk. CS yields, meanwhile, can be excellent. 
+
+
+
+# Export
+```{r fig.height=5, fig.width=6.5}
+p1 = productivity_plt +
+  labs(tag='a)') +
+  theme(axis.ticks.x=element_blank(),
+        axis.text.x=element_text(angle=45, hjust=1, vjust=1.3),
+        text=element_text(size=10))
+
+
+p2 = ei_plt +
+  guides(color='none') +
+  labs(tag='b)') +
+  theme(text=element_text(size=10))
+
+p3 = stability_plt + 
+  labs(tag='c)') +
+  theme(axis.text.x=element_text(angle=45, hjust=1, vjust=1),
+        text=element_text(size=10))
+
+
+p4 = ps_plt + 
+  guides(color='none') +
+  labs(tag='\nd)') +
+  theme(text=element_text(size=12))
+
+
+# grid.arrange(p1, p2, p3, p4, nrow=2)
+
+marrangeGrob(grobs=list(p1, p2, p3, p4), 
+             layout_matrix=rbind(c(1,1,4,4,4,4),
+                                 c(2,2,4,4,4,4),
+                                 c(3,3,4,4,4,4)),
+             top=NULL)
+```
+
+```{r}
+here('Results', 'Figure 2 - productivity and stability.jpg') %>% 
+  jpeg(width=6.5, height=5, units='in', res=300)
+marrangeGrob(grobs=list(p1, p2, p3, p4), 
+             layout_matrix=rbind(c(1,1,4,4,4,4),
+                                 c(2,2,4,4,4,4),
+                                 c(3,3,4,4,4,4)),
+             top=NULL)
+dev.off()
+```
+
+
+```{r fig.height=4, fig.width=6.5}
+p4 = ps_plt + 
+  guides(color='none') +
+  labs(tag='b)') +
+  theme(text=element_text(size=8),
+        axis.ticks=element_line(linewidth=0.1))
+
+p5 = risk_plt +
+  scale_y_continuous(breaks=seq(2, 8, by=2)) +
+  labs(tag='a)') +
+  theme(text=element_text(size=8))
+
+marrangeGrob(grobs=list(p5, p4),
+             layout_matrix=rbind(c(1,1,2,2,2,2),
+                                 c(1,1,2,2,2,2),
+                                 c(1,1,2,2,2,2)),
+             top=NULL)
+```
+
+```{r}
+here('Results', 'Figure 2 ALT - productivity and stability.jpg') %>% 
+  jpeg(width=6.5, height=4, units='in', res=300)
+marrangeGrob(grobs=list(p5, p4),
+             layout_matrix=rbind(c(1,1,2,2,2,2),
+                                 c(1,1,2,2,2,2),
+                                 c(1,1,2,2,2,2)),
+             top=NULL)
+dev.off()
+```
+
+```{r}
+here('Results', 'Figure 2 - EI vs Yield.csv') %>% 
+  write.csv(prod_ei, ., row.names=FALSE)
+```
+
+
