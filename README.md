@@ -1,6 +1,4 @@
-# Diversified rotations can be highly and reliably productive in unstable climates
-
-Analysis from:
+# Data from:
 
 Ewing, P.M., Chim, B.K., Lehman, R.M., and Osborne, S.L. *in revision*. Diversified rotations can be highly and reliably productive in unstable climates. *Field Crops Research*. [Journal](link); [Preprint](https://www.cabidigitallibrary.org/doi/10.31220/agriRxiv.2023.00202)
 
