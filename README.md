@@ -27,7 +27,7 @@ Or you can just view results that I generated with these notebooks:
 
 Raw data is in ./Data/Inputs - all other tables are generated. See ./Data/meta.txt for descriptions. Figure code is embedded within each notebook. 
 
-Issues? Ideas? I'd love to hear from you!
+Issues? Ideas? I'd love to hear from you! 
 
 **Contact**:  
 Patrick Ewing  
