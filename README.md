@@ -20,6 +20,13 @@ To reproduce the analysis:
 5. Run `renv::restore()`.
 6. Run (knit!) in order, starting with 1a. Note that 1a is pretty slow. 
 
+Or you can just view results that I generated with these notebooks:
+- [1a - Process Field Data](https://htmlpreview.github.io/?https://github.com/PatrickEwing-USDA/NCARL_altrot_yield/blob/main/Results/1a---Process-Field-Data.html){:target="_blank"}
+- [1b - Weather Data](https://htmlpreview.github.io/?https://github.com/PatrickEwing-USDA/NCARL_altrot_yield/blob/main/Results/1b---weather-data.html){:target="_blank"}
+- [2 - Productivity and Stability of Rotations](https://htmlpreview.github.io/?https://github.com/PatrickEwing-USDA/NCARL_altrot_yield/blob/main/Results/2---productivity-and-stability-of-rotations.html){:target="_blank"}
+- [3 - Overyielding](https://htmlpreview.github.io/?https://github.com/PatrickEwing-USDA/NCARL_altrot_yield/blob/main/Results/3---overyielding.html){:target="_blank"}
+- [4 - Niche Complementarity](https://htmlpreview.github.io/?https://github.com/PatrickEwing-USDA/NCARL_altrot_yield/blob/main/Results/4---niche-complimentarity.html){:target="_blank"}
+
 Raw data is in ./Data/Inputs - all other tables are generated. See ./Data/meta.txt for descriptions. Figure code is embedded within each notebook. 
 
 Issues? Ideas? I'd love to hear from you!
