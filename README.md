@@ -11,13 +11,14 @@ This is an R repository. Requirements:
 - [R](https://cran.r-project.org/)
 - [RTools](https://cran.r-project.org/bin/windows/Rtools/)
 - [RStudio](https://posit.co/download/rstudio-desktop/)
-- [renv](https://rstudio.github.io/renv/articles/renv.html) will manage libraries. If you need it, then run (in R): install.packages('renv')
+- [`renv`](https://rstudio.github.io/renv/articles/renv.html) will manage libraries. Run (in R) `install.packages('renv')`.
 
 To reproduce the analysis:  
-- Clone the repository
-- Download and install R, RTools, and RStudio
-- Open the .RProj file in RStudio
-- Run (knit!) in order, starting with 1a. Note that 1a is pretty slow. 
+1. Clone the repository.
+2. Download and install R, RTools, and RStudio.
+3. Open the .RProj file in RStudio. Install `renv`.
+5. Run `renv::restore()`.
+6. Run (knit!) in order, starting with 1a. Note that 1a is pretty slow. 
 
 Raw data is in ./Data/Inputs - all other tables are generated. See ./Data/meta.txt for descriptions. Figure code is embedded within each notebook. 
 
